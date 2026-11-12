@@ -1,0 +1,56 @@
+name: Morning Times CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted
+    steps:
+      - name: Check out repository source code
+        uses: https://github.com/actions/checkout@v4
+
+      - name: Install Docker CLI
+        run: |
+          curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add -
+          echo "deb https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
+          apt-get update && apt-get install -y docker-ce-cli docker-buildx-plugin
+
+      - name: Compute registry host (strip protocol scheme)
+        id: registry
+        run: |
+          HOST="${{ github.server_url }}"
+          HOST="${HOST#https://}"
+          HOST="${HOST#http://}"
+          echo "host=$HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Forgejo Container Registry
+        uses: https://github.com/docker/login-action@v3
+        with:
+          registry: ${{ steps.registry.outputs.host }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: https://github.com/docker/metadata-action@v5
+        with:
+          images: ${{ steps.registry.outputs.host }}/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+            latest
+
+      - name: Build and push Docker image
+        uses: https://github.com/docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

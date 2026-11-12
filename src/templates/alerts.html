@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="sv">
+<head><meta charset="utf-8"><title>{{ subject }}</title></head>
+<body style="margin:0;padding:24px 12px;background:#f4f1ea;font-family:Georgia,'Times New Roman',serif;color:#1d1d1b;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;">
+    <tr><td style="padding:24px 28px;border-bottom:3px solid #b4441b;">
+      <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#b4441b;">The Morning Times · Alert</div>
+      <h1 style="margin:8px 0 0 0;font-size:22px;">{{ subject }}</h1>
+    </td></tr>
+    {% for alert in alerts %}
+    <tr><td style="padding:16px 28px;border-bottom:1px solid #e5e1d8;">
+      <h2 style="margin:0 0 6px 0;font-size:17px;">{{ alert.subject }}</h2>
+      {% for line in alert.body.split("\n") %}<p style="margin:0 0 6px 0;font-size:15px;line-height:1.5;">{{ line | urlize }}</p>{% endfor %}
+    </td></tr>
+    {% endfor %}
+  </table>
+</body>
+</html>

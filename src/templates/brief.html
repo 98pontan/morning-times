@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="sv">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ brief.headline }}</title></head>
+<body style="margin:0;padding:0;background:#f4f1ea;font-family:Georgia,'Times New Roman',serif;color:#1d1d1b;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f1ea;">
+    <tr><td align="center" style="padding:24px 12px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:8px;">
+        <tr><td style="padding:28px 28px 8px 28px;border-bottom:3px solid #1d1d1b;">
+          <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#6b6b66;">The Morning Times · {{ day }}</div>
+          <h1 style="margin:8px 0 12px 0;font-size:28px;line-height:1.2;">{{ brief.headline }}</h1>
+          {% if brief.intro %}<p style="margin:0 0 16px 0;font-size:16px;line-height:1.6;">{{ brief.intro }}</p>{% endif %}
+        </td></tr>
+        {% for section in brief.sections %}
+        <tr><td style="padding:24px 28px 8px 28px;">
+          <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#b4441b;">{{ section_names.get(section.slug, section.slug) }}</div>
+          <h2 style="margin:4px 0 12px 0;font-size:21px;">{{ section.title }}</h2>
+          {% for paragraph in section.summary.split("\n\n") if paragraph.strip() %}
+          <p style="margin:0 0 12px 0;font-size:16px;line-height:1.6;">{{ paragraph }}</p>
+          {% endfor %}
+          {% if section.highlights %}
+          <ul style="margin:4px 0 16px 0;padding-left:20px;font-size:15px;line-height:1.5;">
+            {% for h in section.highlights %}{% set a = articles.get(h.article_id) %}{% if a %}
+            <li style="margin-bottom:8px;">{{ h.text }} <a href="{{ a.url }}" style="color:#b4441b;">{{ a.source }} →</a></li>
+            {% endif %}{% endfor %}
+          </ul>
+          {% endif %}
+        </td></tr>
+        {% endfor %}
+        <tr><td style="padding:16px 28px 28px 28px;font-size:12px;color:#6b6b66;border-top:1px solid #e5e1d8;">
+          Generated {{ generator_note }}. Change sections, stocks, teams and regions in the app.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

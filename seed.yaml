@@ -1,0 +1,77 @@
+# Initial content, loaded only into an EMPTY database. Afterwards, edit everything through the API/frontend.
+#
+# Section kinds:  general | economy | sports | regional   (GET /api/section-kinds)
+# Watch types:    economy: stock, keyword | sports: team, keyword | regional: region, keyword | general: keyword
+# Stocks use Yahoo Finance tickers (Stockholm: .ST suffix). Keywords decide which articles are "about" an item.
+
+sections:
+  - slug: varlden
+    name: Världen
+    kind: general
+    sources:
+      - {name: SVT Utrikes, url: "https://www.svt.se/nyheter/utrikes/rss.xml"}
+      - {name: DN Världen, url: "https://www.dn.se/rss/varlden/"}
+      - {name: BBC World, url: "https://feeds.bbci.co.uk/news/world/rss.xml"}
+
+  - slug: sverige
+    name: Sverige
+    kind: general
+    sources:
+      - {name: SVT Inrikes, url: "https://www.svt.se/nyheter/inrikes/rss.xml"}
+      - {name: DN, url: "https://www.dn.se/rss/"}
+      - {name: Aftonbladet, url: "https://www.aftonbladet.se/rss.xml"}
+
+  - slug: politik
+    name: Politik
+    kind: general
+    sources:
+      - {name: DN Politik, url: "https://www.dn.se/rss/politik/"}
+    watch:
+      - {type: keyword, name: Riksdagen, keywords: [riksdag, regeringen, statsminister]}
+
+  - slug: ekonomi
+    name: Ekonomi
+    kind: economy
+    settings:
+      move_threshold_pct: 5        # alert when a stock moves more than this in a day
+      earnings_notice_days: 1      # alert this many days before a quarterly report
+    sources:
+      - {name: SVT Ekonomi, url: "https://www.svt.se/nyheter/ekonomi/rss.xml"}
+      - {name: DN Ekonomi, url: "https://www.dn.se/rss/ekonomi/"}
+      - {name: Dagens industri, url: "https://www.di.se/rss"}
+      - {name: BBC Business, url: "https://feeds.bbci.co.uk/news/business/rss.xml"}
+    watch:
+      - {type: stock, name: Volvo, symbol: VOLV-B.ST, keywords: [Volvo Group, AB Volvo]}
+      - {type: stock, name: Ericsson, symbol: ERIC-B.ST}
+      - {type: stock, name: Investor, symbol: INVE-B.ST}
+      - {type: stock, name: Saab, symbol: SAAB-B.ST, settings: {move_threshold_pct: 4}}
+      - {type: keyword, name: Riksbanken, keywords: [styrräntan, reporäntan]}
+
+  - slug: sport
+    name: Sport
+    kind: sports
+    sources:
+      - {name: SVT Fotboll, url: "https://www.svt.se/sport/fotboll/rss.xml"}
+      - {name: SVT Ishockey, url: "https://www.svt.se/sport/ishockey/rss.xml"}
+      - {name: DN Sport, url: "https://www.dn.se/rss/sport/"}
+      - {name: Expressen Sport, url: "https://www.expressen.se/rss/sport"}
+    watch:
+      - {type: team, name: AIK, symbol: "fotboll/Allsvenskan", keywords: [Gnaget]}
+      - {type: team, name: Djurgården, symbol: "ishockey/SHL", keywords: [Djurgårdens IF, DIF]}
+      - {type: team, name: Tre Kronor, symbol: "ishockey/landslag"}
+      - {type: team, name: Blågult, symbol: "fotboll/landslag", keywords: [herrlandslaget, damlandslaget]}
+
+  - slug: lokalt
+    name: Lokalt
+    kind: regional
+    sources:
+      - {name: SVT Stockholm, url: "https://www.svt.se/nyheter/lokalt/stockholm/rss.xml"}
+      - {name: SVT Väst, url: "https://www.svt.se/nyheter/lokalt/vast/rss.xml"}
+      - {name: SVT Norrbotten, url: "https://www.svt.se/nyheter/lokalt/norrbotten/rss.xml"}
+      - {name: SVT Västerbotten, url: "https://www.svt.se/nyheter/lokalt/vasterbotten/rss.xml"}
+      - {name: SVT Jämtland, url: "https://www.svt.se/nyheter/lokalt/jamtland/rss.xml"}
+      - {name: SVT Västernorrland, url: "https://www.svt.se/nyheter/lokalt/vasternorrland/rss.xml"}
+    watch:
+      - {type: region, name: Stockholm, keywords: [Södermalm, Solna, Nacka, Huddinge, SL]}
+      - {type: region, name: Göteborg, keywords: [Gbg, Hisingen, Mölndal]}
+      - {type: region, name: Norrland, keywords: [Luleå, Umeå, Skellefteå, Kiruna, Östersund, Sundsvall]}

@@ -1,0 +1,42 @@
+# Runtime settings. Override any value with APP_<SECTION>__<KEY>, e.g. APP_SCHEDULER__BRIEF_TIME=07:00.
+# Secrets come from environment variables only: DATABASE_URL, ANTHROPIC_API_KEY, EMAIL_PASSWORD.
+# Sections, sources, stocks, teams and regions live in the database (seeded from seed.yaml once).
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+database:
+  # Local development default. In the cluster: DATABASE_URL=postgresql+psycopg://user:pass@host:5432/morning_times
+  url: sqlite:///./morning-times.db
+  migrate_on_startup: true
+
+scheduler:
+  enabled: true
+  timezone: Europe/Stockholm
+  ingest_interval_minutes: 15
+  alerts_interval_minutes: 30
+  brief_time: "06:30"
+
+email:
+  enabled: true
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
+  sender: pjirbratt@gmail.com
+  recipients:
+    - pjirbratt@yahoo.com
+  password_env: EMAIL_PASSWORD
+
+ai:
+  # auto | claude | gemini | rules
+  # auto = claude if ANTHROPIC_API_KEY is set, else gemini if GEMINI_API_KEY is set, else rules (no AI).
+  provider: gemini
+  claude_model: claude-opus-5-5
+  gemini_model: gemini-3.8-flash       # free tier; gemini-3.5-flash-lite is lighter
+  brief_effort: medium
+  rating_effort: low
+  alert_threshold: 7
+  max_articles_per_section: 40
+  language: Swedish
+
+seed_file: seed.yaml
