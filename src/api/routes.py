@@ -13,9 +13,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.api import schemas as s
 from src.db.models import Alert, Article, Brief, Section, Source, WatchItem, utcnow
-from src.sections import PLUGINS, get_plugin
+from src.sections import PLUGINS, WeatherSection, get_plugin
 from src.sections.regions import REGIONS, REGIONS_BY_SLUG, Region
 from src.services.ingest import rematch_section
+from src.sections.weather import DEFAULT_ALERT_LEVELS, WARNING_AREAS, WARNING_AREAS_BY_ID
 from src.services.market import RANGES
 from src.sources import FETCHERS
 
@@ -224,6 +225,78 @@ def market_chart(
     if range not in RANGES:
         raise HTTPException(422, f"Unknown range '{range}'. Available: {list(RANGES)}")
     return s.ChartOut(symbol=symbol, range=range, points=svc.market.chart(symbol, range))
+
+
+# ---- weather (weather sections) ----------------------------------------------------------
+
+def _weather_section(session: Session, section_id: int) -> Section:
+    section = session.scalar(
+        select(Section).where(Section.id == section_id).options(selectinload(Section.watch_items))
+    )
+    if section is None:
+        raise HTTPException(404, f"Section {section_id} not found")
+    if section.kind != "weather":
+        raise HTTPException(422, f"Only weather sections have this, '{section.slug}' is {section.kind}")
+    return section
+
+
+def _area_item(section: Section, area_id: int) -> WatchItem | None:
+    return next((w for w in section.watch_items if w.type == "warning_area" and w.symbol == str(area_id)), None)
+
+
+def _area_out(section: Section, area, item: WatchItem | None) -> s.WarningAreaOut:
+    return s.WarningAreaOut(
+        id=area.id, name=area.name, kind=area.kind, watch_item_id=item.id if item else None,
+        enabled=bool(item and item.enabled),
+        levels=WeatherSection.alert_levels(section, item) if item
+        else section.settings.get("warning_levels", DEFAULT_ALERT_LEVELS),
+    )
+
+
+@api.get("/sections/{section_id}/warning-areas", response_model=list[s.WarningAreaOut])
+def list_warning_areas(section_id: int, session: Session = Depends(get_session)):
+    """SMHI counties and sea districts, with whether warnings for them are followed and at which levels."""
+    section = _weather_section(session, section_id)
+    return [_area_out(section, a, _area_item(section, a.id)) for a in WARNING_AREAS]
+
+
+@api.put("/sections/{section_id}/warning-areas/{area_id}", response_model=s.WarningAreaOut)
+def set_warning_area(section_id: int, area_id: int, body: s.WarningAreaPatch,
+                     session: Session = Depends(get_session)):
+    """Follow (or stop following) SMHI warnings for an area, and choose which levels are emailed."""
+    section = _weather_section(session, section_id)
+    area = WARNING_AREAS_BY_ID.get(area_id)
+    if area is None:
+        raise HTTPException(404, f"Unknown SMHI warning area {area_id}")
+    item = _area_item(section, area_id)
+    if item is None and body.enabled:
+        item = WatchItem(section_id=section.id, type="warning_area", name=area.name, symbol=str(area.id),
+                         keywords=[], settings={})
+        section.watch_items.append(item)
+    if item is not None:
+        item.enabled = body.enabled
+        if body.levels is not None:
+            item.settings = {**item.settings, "levels": body.levels}
+    session.flush()
+    return _area_out(section, area, item)
+
+
+@api.get("/sections/{section_id}/weather", response_model=s.WeatherOverviewOut)
+def weather_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
+    """Forecasts for the section's places and current SMHI warnings for its areas (cached ~10 min)."""
+    overview = svc.weather.overview(_weather_section(session, section_id))
+    return s.WeatherOverviewOut(
+        places=overview.places, updated_at=overview.updated_at, error=overview.error,
+        warnings=[
+            s.WarningOut(
+                id=v.warning.id, event=v.warning.event, event_code=v.warning.event_code, level=v.warning.level,
+                level_name=v.warning.level_name, area_name=v.warning.area_name, areas=v.areas,
+                alerting=v.alerting, start=v.warning.start, end=v.warning.end, published=v.warning.published,
+                descriptions=v.warning.descriptions,
+            )
+            for v in overview.warnings
+        ],
+    )
 
 
 # ---- watch items (stocks, teams, regions, keywords) -------------------------------------

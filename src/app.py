@@ -19,6 +19,7 @@ from src.services.brief import BriefService
 from src.services.ingest import IngestService
 from src.services.market import MarketService
 from src.services.render import Renderer
+from src.services.weather import WeatherService
 from src.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -34,21 +35,25 @@ class Services:
     alerts: AlertService
     brief: BriefService
     market: MarketService
+    weather: WeatherService
     scheduler: JobScheduler | None = None
 
     @classmethod
     def build(cls, settings: Settings, summarizer: Summarizer | None = None,
-              notifier: Notifier | None = None, market: MarketService | None = None) -> "Services":
+              notifier: Notifier | None = None, market: MarketService | None = None,
+              weather: WeatherService | None = None) -> "Services":
         db = Database(settings.database.url)
         summarizer = summarizer or build_summarizer(settings.ai)
         notifier = notifier or build_notifier(settings.email)
         renderer = Renderer()
+        weather = weather or WeatherService()
         return cls(
             settings=settings, db=db, summarizer=summarizer, notifier=notifier,
             ingest=IngestService(db),
             alerts=AlertService(db, summarizer, notifier, settings.ai, renderer),
-            brief=BriefService(db, summarizer, notifier, settings, renderer),
+            brief=BriefService(db, summarizer, notifier, settings, renderer, weather),
             market=market or MarketService(),
+            weather=weather,
         )
 
 

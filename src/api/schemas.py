@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -155,6 +156,79 @@ class ChartOut(BaseModel):
     symbol: str
     range: str
     points: list[ChartPointOut]
+
+
+# ---- weather (weather sections) ----
+
+class WarningAreaOut(BaseModel):
+    id: int                      # SMHI area id
+    name: str
+    kind: str                    # county | sea
+    watch_item_id: int | None = None
+    enabled: bool = False
+    # Levels that are emailed for this area (MESSAGE, YELLOW, ORANGE, RED).
+    levels: list[str] = Field(default_factory=list)
+
+
+class WarningAreaPatch(BaseModel):
+    enabled: bool
+    # Omit to keep the current levels (or the section default for a new area).
+    levels: list[Literal["MESSAGE", "YELLOW", "ORANGE", "RED"]] | None = None
+
+
+class WarningOut(BaseModel):
+    id: int
+    event: str
+    event_code: str
+    level: str
+    level_name: str
+    area_name: str
+    areas: list[str]             # watched counties/sea districts it touches
+    alerting: bool               # emailed for at least one of those areas
+    start: datetime | None = None
+    end: datetime | None = None
+    published: datetime | None = None
+    descriptions: dict[str, str] = Field(default_factory=dict)
+
+
+class ForecastStepOut(ORM):
+    time: datetime
+    hours: float
+    temperature: float | None
+    symbol: int | None
+    symbol_text: str
+    precipitation: float | None  # mm during the step
+    wind_speed: float | None
+    wind_gust: float | None
+    wind_direction: float | None
+
+
+class DayForecastOut(ORM):
+    date: date
+    min_temp: float | None
+    max_temp: float | None
+    precipitation: float
+    symbol: int | None
+    symbol_text: str
+    max_wind: float | None
+
+
+class PlaceForecastOut(ORM):
+    name: str
+    lat: float
+    lon: float
+    watch_item_id: int | None = None
+    now: ForecastStepOut | None = None
+    hours: list[ForecastStepOut] = Field(default_factory=list)
+    days: list[DayForecastOut] = Field(default_factory=list)
+    error: str | None = None
+
+
+class WeatherOverviewOut(BaseModel):
+    places: list[PlaceForecastOut]
+    warnings: list[WarningOut]
+    updated_at: datetime
+    error: str | None = None
 
 
 # ---- articles, briefs, alerts ----

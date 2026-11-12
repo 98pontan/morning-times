@@ -300,3 +300,167 @@ def test_market_endpoints(env):
     assert client.get("/api/market/chart?symbol=bad%20symbol").status_code == 422
     lokalt = next(s for s in client.get("/api/sections").json() if s["slug"] == "lokalt")
     assert client.get(f"/api/sections/{lokalt['id']}/market").status_code == 422
+
+
+# ---- weather -------------------------------------------------------------------------------
+
+def _smhi_warnings(level="YELLOW", area_ids=(1,), warning_id=10766, end="2099-11-13T08:00:00.000Z"):
+    return [{"id": 3392, "event": {"sv": "Snö", "en": "Snow", "code": "SNOW"}, "warningAreas": [{
+        "id": warning_id, "approximateStart": "2026-11-12T17:00:00.000Z", "approximateEnd": end,
+        "published": "2026-11-12T12:30:00.000Z", "areaName": {"sv": "Norra Stockholms län"},
+        "warningLevel": {"sv": "Gul", "code": level}, "eventDescription": {"sv": "Snöfall", "code": "SNOW"},
+        "affectedAreas": [{"id": a, "sv": "x"} for a in area_ids],
+        "descriptions": [{"title": {"sv": "Vad händer?"}, "text": {"sv": "Mycket snö. "}}],
+    }]}]
+
+
+def _smhi_forecast():
+    from datetime import datetime, timedelta, timezone
+    start = datetime(2026, 11, 12, 23, tzinfo=timezone.utc)  # 00:00 Swedish time on 13/11
+    series = []
+    for i in range(30):
+        t = start + timedelta(hours=i)
+        series.append({"time": t.isoformat().replace("+00:00", "Z"),
+                       "intervalParametersStartTime": (t - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+                       "data": {"air_temperature": float(i % 24) - 5, "symbol_code": 26 if i == 12 else 6,
+                                "precipitation_amount_mean": 0.5, "wind_speed": 4.0, "wind_speed_of_gust": 9.0,
+                                "cloud_base_altitude": 9999}})
+    return {"timeSeries": series}
+
+
+class FakeWeather:
+    def __init__(self, warnings_payload=None):
+        from src.sections.weather import parse_forecast, parse_warnings
+        self._warnings = parse_warnings(warnings_payload or [])
+        self._forecast = parse_forecast(_smhi_forecast())
+        self.calls = 0
+
+    def warnings(self):
+        self.calls += 1
+        return self._warnings
+
+    def forecast(self, lat, lon):
+        return self._forecast
+
+
+def test_smhi_parsing():
+    from src.sections.weather import parse_forecast, parse_warnings, parse_position
+    (w,) = parse_warnings(_smhi_warnings(level="ORANGE"))
+    assert (w.id, w.event, w.level, w.level_name, w.area_ids) == (10766, "Snöfall", "ORANGE", "Orange varning", [1])
+    assert w.descriptions == {"Vad händer?": "Mycket snö."}
+    steps = parse_forecast(_smhi_forecast())
+    assert steps[12].symbol_text == "Snöfall" and steps[0].precipitation == 0.5 and steps[0].hours == 1
+    assert parse_position("59.3293,18.0686") == (59.3293, 18.0686) and parse_position("Stockholm") is None
+
+
+def test_weather_alerts_only_for_chosen_areas_and_levels():
+    from datetime import datetime, timezone
+    from src.sections import WeatherSection
+    section = Section(slug="v", name="Väder", kind="weather", settings={})
+    items = [WatchItem(id=1, type="warning_area", name="Stockholms län", symbol="1",
+                       settings={"levels": ["YELLOW", "ORANGE"]}, enabled=True),
+             WatchItem(id=2, type="warning_area", name="Skåne län", symbol="12", settings={}, enabled=False)]
+    now = lambda: datetime(2026, 11, 12, 18, tzinfo=timezone.utc)
+
+    def alerts(payload):
+        return WeatherSection(FakeWeather(payload), now=now).check_alerts(section, items)
+
+    (yellow,) = alerts(_smhi_warnings("YELLOW", area_ids=(1, 3)))
+    assert yellow.dedup_key == "smhi:10766:YELLOW" and yellow.kind == "weather_warning"
+    assert yellow.subject == "Gul varning från SMHI: Snöfall, Norra Stockholms län"
+    assert "Gäller tor 12/11 18:00" in yellow.body  # Swedish local time
+    assert "Stockholms län, Uppsala län" in yellow.body and "Vad händer?: Mycket snö." in yellow.body
+    assert alerts(_smhi_warnings("ORANGE"))[0].dedup_key == "smhi:10766:ORANGE"  # upgrade = new alert
+    assert alerts(_smhi_warnings("RED")) == []            # not chosen for Stockholm
+    assert alerts(_smhi_warnings("MESSAGE")) == []
+    assert alerts(_smhi_warnings("ORANGE", area_ids=(12,))) == []   # Skåne is not followed
+    assert alerts(_smhi_warnings("ORANGE", end="2026-11-12T10:00:00.000Z")) == []  # already over
+    section.settings = {"warning_levels": ["RED"]}
+    items[0].settings = {}
+    assert len(alerts(_smhi_warnings("RED"))) == 1        # section default applies without own levels
+
+
+def _weather_env(env, payload):
+    from datetime import datetime, timezone
+    from src.db.models import Section as S, WatchItem as W
+    from src.sections import WeatherSection
+    from src.services.weather import WeatherService
+    client, services = env
+    fake = FakeWeather(payload)
+    now = lambda: datetime(2026, 11, 12, 22, 30, tzinfo=timezone.utc)
+    services.weather = services.brief.weather = WeatherService(fake, now=now)
+    plugin = WeatherSection(fake, now=now)
+    with services.db.session() as session:
+        section = S(slug="vader", name="Väder", kind="weather", position=9, settings={})
+        section.watch_items = [
+            W(type="warning_area", name="Stockholms län", symbol="1", keywords=[], settings={"levels": ["YELLOW", "ORANGE"]}),
+            W(type="place", name="Stockholm", symbol="59.3293,18.0686", keywords=[], settings={}),
+        ]
+        session.add(section)
+        session.flush()
+        section_id = section.id
+    return client, services, section_id, plugin
+
+
+def test_weather_endpoints_alerts_and_brief(env, monkeypatch):
+    from src.sections import PLUGINS
+    client, services, vader, plugin = _weather_env(env, _smhi_warnings("ORANGE", area_ids=(1,)))
+    monkeypatch.setitem(PLUGINS, "weather", plugin)
+
+    overview = client.get(f"/api/sections/{vader}/weather").json()
+    (place,) = overview["places"]
+    assert place["name"] == "Stockholm" and place["now"]["temperature"] == -5
+    assert len(place["hours"]) == 24 and place["days"][0]["date"] == "2026-11-13"
+    assert place["days"][0]["symbol_text"] == "Snöfall" and place["days"][0]["precipitation"] == 12.0
+    (warning,) = overview["warnings"]
+    assert warning["level"] == "ORANGE" and warning["areas"] == ["Stockholms län"] and warning["alerting"]
+
+    # Warning areas: listed, followed at the chosen levels; another area can be added and un-followed.
+    areas = {a["id"]: a for a in client.get(f"/api/sections/{vader}/warning-areas").json()}
+    assert len(areas) == 39 and areas[1]["enabled"] and areas[1]["levels"] == ["YELLOW", "ORANGE"]
+    assert areas[12] == {**areas[12], "enabled": False, "watch_item_id": None}
+    skane = client.put(f"/api/sections/{vader}/warning-areas/12", json={"enabled": True, "levels": ["RED"]}).json()
+    assert skane["enabled"] and skane["levels"] == ["RED"] and skane["name"] == "Skåne län"
+    off = client.put(f"/api/sections/{vader}/warning-areas/12", json={"enabled": False}).json()
+    assert not off["enabled"] and off["watch_item_id"] == skane["watch_item_id"]
+    assert client.put(f"/api/sections/{vader}/warning-areas/999", json={"enabled": True}).status_code == 404
+    assert client.put(f"/api/sections/{vader}/warning-areas/1", json={"enabled": True, "levels": ["PINK"]}).status_code == 422
+    ekonomi = next(s for s in client.get("/api/sections").json() if s["slug"] == "ekonomi")
+    assert client.get(f"/api/sections/{ekonomi['id']}/weather").status_code == 422
+
+    # The alert job emails the orange warning once.
+    services.alerts._article_alerts = lambda: (0, 0)
+    from src.sections import EconomySection
+    monkeypatch.setitem(PLUGINS, "economy", EconomySection(FakeMarket({}, {})))
+    assert client.post("/api/jobs/alerts").json() == {"created": 1, "rated": 0, "sent": 1}
+    subject, text, html = services.notifier.sent[-1]
+    assert subject == "Orange varning från SMHI: Snöfall, Norra Stockholms län" and "smhi.se" in html
+    assert client.post("/api/jobs/alerts").json()["created"] == 0
+
+    # The brief gets a weather block.
+    services.brief.generate(day=date(2026, 11, 13), send=False)
+    brief = client.get("/api/briefs/2026-11-13").json()
+    assert brief["data"]["weather"]["places"][0]["max_temp"] == 18
+    html = client.get("/api/briefs/2026-11-13/html").text
+    assert "Väder" in html and "Orange varning" in html and "Snöfall" in html
+
+
+def test_weather_migration_adds_section_to_seeded_database(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+    url = f"sqlite:///{tmp_path}/m.db"
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "0001")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO sections (slug, name, kind, enabled, position, settings) "
+                          "VALUES ('sverige', 'Sverige', 'general', 1, 3, '{}')"))
+    command.upgrade(cfg, "head")
+    with engine.begin() as conn:
+        section = conn.execute(text("SELECT id, slug, position FROM sections WHERE kind = 'weather'")).one()
+        items = conn.execute(text("SELECT type, symbol, settings FROM watch_items WHERE section_id = :id"),
+                             {"id": section.id}).all()
+    assert (section.slug, section.position) == ("vader", 4)
+    assert [(i.type, i.symbol) for i in items] == [("warning_area", "1"), ("place", "59.3293,18.0686")]

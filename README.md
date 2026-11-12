@@ -1,8 +1,8 @@
 # The Morning Times
 
 A configurable news service: it collects Swedish and international news into sections
-(world, Sweden, politics, economy, sports, local), follows the stocks, teams and regions you
-care about, emails alerts on important events, and sends a Morning Brew-style brief every morning.
+(world, Sweden, politics, economy, sports, local, weather), follows the stocks, teams and regions you
+care about, emails alerts on important events and SMHI weather warnings, and sends a Morning Brew-style brief every morning.
 
 This repository is the **backend** (FastAPI). A frontend will use the REST API under `/api`.
 
@@ -11,8 +11,8 @@ This repository is the **backend** (FastAPI). A frontend will use the REST API u
 | Job | Default schedule | What it does |
 |---|---|---|
 | Ingest | every 15 min | Fetches all enabled RSS sources, stores new articles, tags them with watched items (keyword match) |
-| Alerts | every 30 min | Stock moves above a threshold and upcoming quarterly reports (Yahoo Finance); the AI rates new articles about watched items, and those rated ≥ 7/10 are emailed |
-| Brief | 06:30 Europe/Stockholm | The AI writes the brief from the last 24 h per section; stored in the database and emailed as HTML |
+| Alerts | every 30 min | Stock moves above a threshold and upcoming quarterly reports (Yahoo Finance); SMHI warnings for the chosen areas and levels; the AI rates new articles about watched items, and those rated ≥ 7/10 are emailed |
+| Brief | 06:30 Europe/Stockholm | The AI writes the brief from the last 24 h per section, plus today's forecast and active warnings; stored in the database and emailed as HTML |
 
 The AI provider is set with `ai.provider`:
 
@@ -63,7 +63,25 @@ curl "localhost:8080/api/market/chart?symbol=VOLV-B.ST&range=3m"  # 1d 1w 1m 3m 
 curl -X POST localhost:8080/api/sections/4/watch-items \
   -H 'content-type: application/json' \
   -d '{"type": "stock", "name": "Atlas Copco", "symbol": "ATCO-A.ST", "settings": {"move_threshold_pct": 4}}'
+curl localhost:8080/api/sections/3/weather                   # forecast per place + SMHI warnings for followed areas
+curl localhost:8080/api/sections/3/warning-areas             # SMHI counties/sea districts, which are followed
+curl -X PUT localhost:8080/api/sections/3/warning-areas/12 \
+  -H 'content-type: application/json' -d '{"enabled": true, "levels": ["ORANGE", "RED"]}'  # Skåne, orange+red
 ```
+
+### Weather (SMHI)
+
+The weather section (`kind: weather`, seeded as "Väder") uses SMHI's open data, no key needed:
+
+- **Warnings**: follow counties or sea districts (`warning_area` watch items, symbol = SMHI area id) and
+  choose per area which levels are emailed: `MESSAGE`, `YELLOW`, `ORANGE`, `RED`. Areas without their
+  own levels use the section's `warning_levels`. A warning that touches a followed county alerts even if it only
+  covers part of it. Each warning area is emailed once per level, so an upgrade from yellow to orange
+  alerts again. Default: Stockholms län, yellow and orange.
+- **Forecast**: `place` watch items with symbol `"lat,lon"` get an hourly/daily forecast (SMHI snow1g) on
+  the weather page and a one-line summary in the brief.
+
+A database seeded before the weather section existed gets it from migration `0002`.
 
 ## Structure
 
@@ -73,7 +91,7 @@ src/app.py              wiring: Services + FastAPI app + scheduler
 src/settings.py         config.yaml + env overrides
 src/db/                 SQLAlchemy models and database/migrations helper
 src/sources/            fetchers (RssFetcher); add new source types here
-src/sections/           section kinds: general, economy (stocks), sports (teams), regional
+src/sections/           section kinds: general, economy (stocks), sports (teams), regional, weather (SMHI)
 src/ai/                 Summarizer interface: GeminiSummarizer, ClaudeSummarizer, RuleSummarizer
 src/services/           ingest, alerts, brief, HTML rendering
 src/api/                REST API (sections, sources, watch items, articles, briefs, alerts, jobs)

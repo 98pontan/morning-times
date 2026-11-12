@@ -10,6 +10,21 @@
           <h1 style="margin:8px 0 12px 0;font-size:28px;line-height:1.2;">{{ brief.headline }}</h1>
           {% if brief.intro %}<p style="margin:0 0 16px 0;font-size:16px;line-height:1.6;">{{ brief.intro }}</p>{% endif %}
         </td></tr>
+        {% if weather and (weather.places or weather.warnings) %}
+        <tr><td style="padding:20px 28px 4px 28px;">
+          <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#b4441b;">Väder</div>
+          {% for p in weather.places if not p.error %}
+          <p style="margin:6px 0;font-size:16px;line-height:1.5;"><strong>{{ p.name }}</strong>: {{ p.symbol_text }},
+            {{ temp(p.min_temp) }} till {{ temp(p.max_temp) }}{% if p.precipitation %}, {{ '%.1f' % p.precipitation }} mm{% endif %}{% if p.max_wind %}, vind upp till {{ p.max_wind | round | int }} m/s{% endif %}</p>
+          {% endfor %}
+          {% for w in weather.warnings %}
+          {% set color = {'RED': '#c62828', 'ORANGE': '#e8710a', 'YELLOW': '#d4a106'}.get(w.level, '#6b6b66') %}
+          <p style="margin:8px 0;padding:8px 12px;font-size:15px;line-height:1.4;border-left:4px solid {{ color }};background:#faf7f0;">
+            <strong>{{ w.level_name }}</strong>: {{ w.event }}, {{ w.area_name }}<br>
+            <span style="color:#6b6b66;font-size:13px;">{{ local_text(w.start) }} – {{ local_text(w.end) }}</span></p>
+          {% endfor %}
+        </td></tr>
+        {% endif %}
         {% for section in brief.sections %}
         <tr><td style="padding:24px 28px 8px 28px;">
           <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#b4441b;">{{ section_names.get(section.slug, section.slug) }}</div>

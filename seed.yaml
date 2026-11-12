@@ -1,7 +1,8 @@
 # Initial content, loaded only into an EMPTY database. Afterwards, edit everything through the API/frontend.
 #
-# Section kinds:  general | economy | sports | regional   (GET /api/section-kinds)
+# Section kinds:  general | economy | sports | regional | weather   (GET /api/section-kinds)
 # Watch types:    economy: stock, keyword | sports: team, keyword | regional: region, keyword | general: keyword
+#                 weather: warning_area (symbol = SMHI area id), place (symbol = "lat,lon"), keyword
 # Stocks use Yahoo Finance tickers (Stockholm: .ST suffix). Keywords decide which articles are "about" an item.
 
 sections:
@@ -20,6 +21,16 @@ sections:
       - {name: SVT Inrikes, url: "https://www.svt.se/nyheter/inrikes/rss.xml"}
       - {name: DN, url: "https://www.dn.se/rss/"}
       - {name: Aftonbladet, url: "https://www.aftonbladet.se/rss.xml"}
+
+  - slug: vader
+    name: Väder
+    kind: weather
+    settings:
+      warning_levels: [YELLOW, ORANGE, RED]   # default for areas without their own levels
+    watch:
+      # SMHI warning areas: GET /api/sections/<id>/warning-areas lists all counties and sea districts.
+      - {type: warning_area, name: Stockholms län, symbol: "1", settings: {levels: [YELLOW, ORANGE]}}
+      - {type: place, name: Stockholm, symbol: "59.3293,18.0686"}
 
   - slug: politik
     name: Politik
