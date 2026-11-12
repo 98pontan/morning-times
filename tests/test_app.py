@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from src.db.models import Section, WatchItem
 from src.sections import EconomySection
@@ -239,3 +239,64 @@ def test_regions_pick_fetch_filter_and_unpick(env):
     assert client.put(f"/api/sections/{lokalt['id']}/regions/atlantis", json={"enabled": True}).status_code == 404
     ekonomi = next(s for s in client.get("/api/sections").json() if s["slug"] == "ekonomi")
     assert client.get(f"/api/sections/{ekonomi['id']}/regions").status_code == 422
+
+
+def _daily_bars(start: date, closes: list[float]):
+    from datetime import datetime, time as dtime, timedelta, timezone
+    from src.sections.market import Bar
+    return [Bar(datetime.combine(start + timedelta(days=i), dtime(17, 30), timezone.utc), c, 1000.0)
+            for i, c in enumerate(closes)]
+
+
+def test_stock_row_returns_and_turnover():
+    from src.services.market import build_row
+    # 400 days, price 100 until 2026-01-01 then rising 1 per day; last day 2026-11-12.
+    start = date(2025, 10, 9)
+    closes = [100.0 if start + timedelta(days=i) <= date(2025, 12, 31) else 100.0 + (start + timedelta(days=i) - date(2025, 12, 31)).days
+              for i in range(400)]
+    bars = _daily_bars(start, closes)
+    assert bars[-1].t.date() == date(2026, 11, 12)
+    row = build_row("Volvo", "VOLV-B.ST", bars)
+    assert row.last == 416 and row.change == 1 and round(row.change_pct, 3) == round(1 / 415 * 100, 3)
+    assert round(row.returns["ytd"], 6) == 316.0          # 100 at 2025-12-31 -> 416
+    assert round(row.returns["1w"], 4) == round((416 - 409) / 409 * 100, 4)
+    assert row.returns["1y"] == 316.0                     # 2025-11-12 was still 100
+    assert row.high_52w == 416 and row.low_52w == 100
+    assert row.turnover == 416_000 and len(row.spark) == 91
+    assert build_row("X", "X", []).error
+
+
+def test_market_endpoints(env):
+    from src.services.market import MarketService
+    client, services = env
+
+    class Market(FakeMarket):
+        def __init__(self):
+            super().__init__({}, {"VOLV-B.ST": date(2026, 11, 20)})
+            self.calls = 0
+
+        def history(self, symbols, period="2y", interval="1d"):
+            self.calls += 1
+            data = {"VOLV-B.ST": _daily_bars(date(2026, 11, 1), [100, 110]), "^OMX": _daily_bars(date(2026, 11, 1), [2000, 1980])}
+            return {s: data[s] for s in symbols if s in data}
+
+        def currency(self, symbol):
+            return "SEK"
+
+    market = Market()
+    services.market = MarketService(market)
+    ekonomi = next(s for s in client.get("/api/sections").json() if s["slug"] == "ekonomi")
+    overview = client.get(f"/api/sections/{ekonomi['id']}/market").json()
+    assert overview["index"]["name"] == "OMX Stockholm 30" and round(overview["index"]["change_pct"], 2) == -1.0
+    volvo, ericsson = overview["stocks"]  # both watched stocks, in watch-list order
+    assert (volvo["last"], volvo["change_pct"], volvo["currency"], volvo["earnings_date"]) == (110, 10, "SEK", "2026-11-20")
+    assert ericsson["error"] == "Ingen kursdata"
+    client.get(f"/api/sections/{ekonomi['id']}/market")
+    assert market.calls == 1  # cached
+
+    chart = client.get("/api/market/chart?symbol=^OMX&range=1m").json()
+    assert [p["close"] for p in chart["points"]] == [2000, 1980]
+    assert client.get("/api/market/chart?symbol=^OMX&range=7y").status_code == 422
+    assert client.get("/api/market/chart?symbol=bad%20symbol").status_code == 422
+    lokalt = next(s for s in client.get("/api/sections").json() if s["slug"] == "lokalt")
+    assert client.get(f"/api/sections/{lokalt['id']}/market").status_code == 422

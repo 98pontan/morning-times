@@ -16,6 +16,7 @@ from src.db.models import Alert, Article, Brief, Section, Source, WatchItem, utc
 from src.sections import PLUGINS, get_plugin
 from src.sections.regions import REGIONS, REGIONS_BY_SLUG, Region
 from src.services.ingest import rematch_section
+from src.services.market import RANGES
 from src.sources import FETCHERS
 
 router = APIRouter()
@@ -197,6 +198,32 @@ def set_region(
         svc.ingest.run_source(source.id)
         session.refresh(source)
     return _region_out(region, source)
+
+
+# ---- stock screen (economy sections) ----------------------------------------------------
+
+@api.get("/sections/{section_id}/market", response_model=s.MarketOverviewOut)
+def market_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
+    """Prices and development for the section's watched stocks and its reference index (cached ~2 min)."""
+    section = session.scalar(
+        select(Section).where(Section.id == section_id).options(selectinload(Section.watch_items))
+    )
+    if section is None:
+        raise HTTPException(404, f"Section {section_id} not found")
+    if section.kind != "economy":
+        raise HTTPException(422, f"Only economy sections have a stock screen, '{section.slug}' is {section.kind}")
+    return svc.market.overview(section)
+
+
+@api.get("/market/chart", response_model=s.ChartOut)
+def market_chart(
+    symbol: str = Query(pattern=r"^[A-Za-z0-9^=.\-]{1,32}$", description="Yahoo symbol, e.g. VOLV-B.ST or ^OMX"),
+    range: str = Query("1m", description=f"One of {', '.join(RANGES)}"),
+    svc=Depends(services),
+):
+    if range not in RANGES:
+        raise HTTPException(422, f"Unknown range '{range}'. Available: {list(RANGES)}")
+    return s.ChartOut(symbol=symbol, range=range, points=svc.market.chart(symbol, range))
 
 
 # ---- watch items (stocks, teams, regions, keywords) -------------------------------------

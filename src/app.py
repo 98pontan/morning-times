@@ -17,6 +17,7 @@ from src.seed import seed_if_empty
 from src.services.alerts import AlertService
 from src.services.brief import BriefService
 from src.services.ingest import IngestService
+from src.services.market import MarketService
 from src.services.render import Renderer
 from src.settings import Settings
 
@@ -32,11 +33,12 @@ class Services:
     ingest: IngestService
     alerts: AlertService
     brief: BriefService
+    market: MarketService
     scheduler: JobScheduler | None = None
 
     @classmethod
     def build(cls, settings: Settings, summarizer: Summarizer | None = None,
-              notifier: Notifier | None = None) -> "Services":
+              notifier: Notifier | None = None, market: MarketService | None = None) -> "Services":
         db = Database(settings.database.url)
         summarizer = summarizer or build_summarizer(settings.ai)
         notifier = notifier or build_notifier(settings.email)
@@ -46,6 +48,7 @@ class Services:
             ingest=IngestService(db),
             alerts=AlertService(db, summarizer, notifier, settings.ai, renderer),
             brief=BriefService(db, summarizer, notifier, settings, renderer),
+            market=market or MarketService(),
         )
 
 

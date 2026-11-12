@@ -117,6 +117,46 @@ class WatchItemOut(ORM):
     enabled: bool
 
 
+# ---- stock screen ----
+
+class StockRowOut(ORM):
+    name: str
+    symbol: str
+    watch_item_id: int | None = None
+    currency: str = ""
+    last: float | None = None
+    change: float | None = None
+    change_pct: float | None = None
+    # Development in % over 1w, 1m, 3m, ytd and 1y (null when there is no data that far back).
+    returns: dict[str, float | None] = Field(default_factory=dict)
+    high_52w: float | None = None
+    low_52w: float | None = None
+    volume: float | None = None
+    turnover: float | None = None
+    earnings_date: date | None = None
+    as_of: datetime | None = None
+    # Daily closes for the last 3 months, oldest first.
+    spark: list[float] = Field(default_factory=list)
+    error: str | None = None
+
+
+class MarketOverviewOut(ORM):
+    index: StockRowOut | None
+    stocks: list[StockRowOut]
+    updated_at: datetime
+
+
+class ChartPointOut(ORM):
+    t: datetime
+    close: float
+
+
+class ChartOut(BaseModel):
+    symbol: str
+    range: str
+    points: list[ChartPointOut]
+
+
 # ---- articles, briefs, alerts ----
 
 class ArticleOut(ORM):
