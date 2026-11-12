@@ -6,12 +6,12 @@ import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from src.ai import ArticleInput, RuleSummarizer, SectionInput, Summarizer, SummarizerError
 from src.db.database import Database
-from src.db.models import Article, Brief, Section, utcnow
+from src.db.models import Article, Brief, Section, Source, utcnow
 from src.notifier import Notifier
 from src.sections import get_plugin
 from src.services.render import Renderer
@@ -77,7 +77,10 @@ class BriefService:
         for section in sections:
             plugin = get_plugin(section.kind)
             rows = session.scalars(
-                select(Article).where(Article.section_id == section.id, Article.published_at >= since)
+                select(Article).outerjoin(Source, Article.source_id == Source.id)
+                .where(Article.section_id == section.id, Article.published_at >= since)
+                # Skip articles from disabled sources, e.g. a region that is no longer picked.
+                .where(or_(Source.id.is_(None), Source.enabled))
                 .options(selectinload(Article.watch_items), selectinload(Article.source))
                 .order_by(Article.published_at.desc())
                 .limit(limit * 3)

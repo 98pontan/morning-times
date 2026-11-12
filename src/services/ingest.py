@@ -38,19 +38,24 @@ class IngestService:
 
         result = IngestResult(sources=len(source_ids))
         for source_id in source_ids:
-            # One transaction per source, so a broken feed doesn't lose the others.
-            with self.db.session() as session:
-                source = session.get(Source, source_id)
-                try:
-                    result.new_articles += self._ingest_source(session, source)
-                    source.last_error = None
-                except Exception as exc:
-                    log.warning("Fetching %s failed: %s", source.url, exc)
-                    source.last_error = f"{type(exc).__name__}: {exc}"[:2000]
-                    result.errors[source.name] = source.last_error
-                source.last_fetched_at = utcnow()
+            self.run_source(source_id, result)
         log.info("Ingest: %d new articles from %d sources (%d errors)",
                  result.new_articles, result.sources, len(result.errors))
+        return result
+
+    def run_source(self, source_id: int, result: IngestResult | None = None) -> IngestResult:
+        """Fetch one source. One transaction per source, so a broken feed doesn't lose the others."""
+        result = result or IngestResult(sources=1)
+        with self.db.session() as session:
+            source = session.get(Source, source_id)
+            try:
+                result.new_articles += self._ingest_source(session, source)
+                source.last_error = None
+            except Exception as exc:
+                log.warning("Fetching %s failed: %s", source.url, exc)
+                source.last_error = f"{type(exc).__name__}: {exc}"[:2000]
+                result.errors[source.name] = source.last_error
+            source.last_fetched_at = utcnow()
         return result
 
     def _ingest_source(self, session, source: Source) -> int:

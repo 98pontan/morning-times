@@ -211,3 +211,31 @@ def test_provider_selection(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
     assert isinstance(build_summarizer(AISettings(provider="auto")), ClaudeSummarizer)
     assert isinstance(build_summarizer(AISettings(provider="gemini")), GeminiSummarizer)
+
+
+def test_regions_pick_fetch_filter_and_unpick(env):
+    client, services = env
+    lokalt = next(s for s in client.get("/api/sections").json() if s["slug"] == "lokalt")
+    regions = client.get(f"/api/sections/{lokalt['id']}/regions").json()
+    skane = next(r for r in regions if r["slug"] == "skane")
+    assert skane == {**skane, "enabled": False, "source_id": None}
+    assert len(regions) == 21
+
+    # Picking a region adds its SVT feed and fetches it right away.
+    picked = client.put(f"/api/sections/{lokalt['id']}/regions/skane", json={"enabled": True}).json()
+    assert picked["enabled"] and picked["source_id"]
+    source = next(s for s in client.get(f"/api/sections/{lokalt['id']}/sources").json() if s["id"] == picked["source_id"])
+    assert source["name"] == "SVT Skåne" and source["last_fetched_at"]
+    by_region = client.get(f"/api/articles?section=lokalt&source_id={picked['source_id']}").json()
+    assert len(by_region) == 3 and {a["source_id"] for a in by_region} == {picked["source_id"]}
+    assert client.get("/api/articles?section=ekonomi").json() == []  # only that one source was fetched
+
+    # Un-picking disables the source and hides its articles; picking again re-enables the same source.
+    client.put(f"/api/sections/{lokalt['id']}/regions/skane", json={"enabled": False})
+    assert client.get(f"/api/articles?section=lokalt&source_id={picked['source_id']}").json() == []
+    again = client.put(f"/api/sections/{lokalt['id']}/regions/skane", json={"enabled": True}).json()
+    assert again["source_id"] == picked["source_id"]
+
+    assert client.put(f"/api/sections/{lokalt['id']}/regions/atlantis", json={"enabled": True}).status_code == 404
+    ekonomi = next(s for s in client.get("/api/sections").json() if s["slug"] == "ekonomi")
+    assert client.get(f"/api/sections/{ekonomi['id']}/regions").status_code == 422

@@ -71,6 +71,22 @@ class SourceOut(ORM):
     last_error: str | None
 
 
+# ---- regions (catalog of local editions for regional sections) ----
+
+class RegionOut(BaseModel):
+    slug: str
+    name: str
+    covers: str
+    url: str
+    # The section's source for this region, if it was ever picked.
+    source_id: int | None = None
+    enabled: bool = False
+
+
+class RegionPatch(BaseModel):
+    enabled: bool
+
+
 # ---- watch items ----
 
 class WatchItemIn(BaseModel):
@@ -106,6 +122,7 @@ class WatchItemOut(ORM):
 class ArticleOut(ORM):
     id: int
     section_id: int
+    source_id: int | None = None
     url: str
     title: str
     summary: str

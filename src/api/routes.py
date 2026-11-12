@@ -7,13 +7,14 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from src.api import schemas as s
 from src.db.models import Alert, Article, Brief, Section, Source, WatchItem, utcnow
 from src.sections import PLUGINS, get_plugin
+from src.sections.regions import REGIONS, REGIONS_BY_SLUG, Region
 from src.services.ingest import rematch_section
 from src.sources import FETCHERS
 
@@ -152,6 +153,52 @@ def delete_source(source_id: int, session: Session = Depends(get_session)):
     return Response(status_code=204)
 
 
+# ---- regions (local editions a regional section can pick) -------------------------------
+
+def _regional_section(session: Session, section_id: int) -> Section:
+    section = _get(session, Section, section_id)
+    if section.kind != "regional":
+        raise HTTPException(422, f"Only regional sections have regions, '{section.slug}' is {section.kind}")
+    return section
+
+
+def _region_out(region: Region, source: Source | None) -> s.RegionOut:
+    return s.RegionOut(
+        slug=region.slug, name=region.name, covers=region.covers, url=region.url,
+        source_id=source.id if source else None, enabled=bool(source and source.enabled),
+    )
+
+
+@api.get("/sections/{section_id}/regions", response_model=list[s.RegionOut])
+def list_regions(section_id: int, session: Session = Depends(get_session)):
+    by_url = {src.url: src for src in _regional_section(session, section_id).sources}
+    return [_region_out(r, by_url.get(r.url)) for r in REGIONS]
+
+
+@api.put("/sections/{section_id}/regions/{slug}", response_model=s.RegionOut)
+def set_region(
+    section_id: int, slug: str, body: s.RegionPatch,
+    session: Session = Depends(get_session), svc=Depends(services),
+):
+    """Pick or un-pick a region: adds/enables its feed, or disables it (kept, so it can be re-picked)."""
+    section = _regional_section(session, section_id)
+    region = REGIONS_BY_SLUG.get(slug)
+    if region is None:
+        raise HTTPException(404, f"Unknown region '{slug}'")
+    source = next((src for src in section.sources if src.url == region.url), None)
+    if source is None and body.enabled:
+        source = Source(section_id=section.id, name=region.source_name, url=region.url, kind="rss")
+        session.add(source)
+    if source is not None:
+        source.enabled = body.enabled
+    session.commit()
+    if body.enabled and source.last_fetched_at is None:
+        # Fetch now so the region's news shows up at once instead of after the next ingest run.
+        svc.ingest.run_source(source.id)
+        session.refresh(source)
+    return _region_out(region, source)
+
+
 # ---- watch items (stocks, teams, regions, keywords) -------------------------------------
 
 @api.get("/sections/{section_id}/watch-items", response_model=list[s.WatchItemOut])
@@ -192,24 +239,29 @@ def delete_watch_item(item_id: int, session: Session = Depends(get_session)):
 @api.get("/articles", response_model=list[s.ArticleOut])
 def list_articles(
     section: str | None = Query(None, description="Section slug"),
+    source_id: int | None = Query(None, description="Only articles from this source (e.g. one region)"),
     watched_only: bool = False,
     hours: int = Query(24, ge=1, le=24 * 30),
     limit: int = Query(50, ge=1, le=500),
     session: Session = Depends(get_session),
 ):
     query = (
-        select(Article).join(Section)
-        .where(Section.enabled, Article.published_at >= utcnow() - timedelta(hours=hours))
+        select(Article).join(Section).outerjoin(Source, Article.source_id == Source.id)
+        # Articles from a disabled source (e.g. an un-picked region) are hidden.
+        .where(Section.enabled, or_(Source.id.is_(None), Source.enabled))
+        .where(Article.published_at >= utcnow() - timedelta(hours=hours))
         .options(selectinload(Article.watch_items), selectinload(Article.source))
         .order_by(Article.published_at.desc()).limit(limit)
     )
     if section:
         query = query.where(Section.slug == section)
+    if source_id is not None:
+        query = query.where(Article.source_id == source_id)
     if watched_only:
         query = query.where(Article.watch_items.any())
     return [
         s.ArticleOut(
-            id=a.id, section_id=a.section_id, url=a.url, title=a.title, summary=a.summary,
+            id=a.id, section_id=a.section_id, source_id=a.source_id, url=a.url, title=a.title, summary=a.summary,
             source=a.source.name if a.source else None, published_at=a.published_at,
             importance=a.importance, importance_reason=a.importance_reason,
             watched=[w.name for w in a.watch_items],

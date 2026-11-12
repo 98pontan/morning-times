@@ -55,6 +55,9 @@ Useful calls:
 curl -X POST localhost:8080/api/jobs/ingest                 # fetch news now
 curl -X POST "localhost:8080/api/briefs/generate?send=false" # write today's brief without emailing
 open http://localhost:8080/api/briefs/$(date +%F)/html        # view it
+curl localhost:8080/api/sections/6/regions                  # SVT local editions, which are picked
+curl -X PUT localhost:8080/api/sections/6/regions/skane \
+  -H 'content-type: application/json' -d '{"enabled": true}'  # pick Skåne (fetched at once)
 curl -X POST localhost:8080/api/sections/4/watch-items \
   -H 'content-type: application/json' \
   -d '{"type": "stock", "name": "Atlas Copco", "symbol": "ATCO-A.ST", "settings": {"move_threshold_pct": 4}}'
