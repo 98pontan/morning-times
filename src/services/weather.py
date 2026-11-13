@@ -6,12 +6,13 @@ SMHI updates forecasts about once an hour and warnings a few times a day, so res
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from src.db.models import Section
 from src.sections.weather import (
-    LOCAL_TZ, WARNING_AREAS_BY_ID, ForecastStep, SmhiWeatherData, Warning, WeatherData, parse_position,
+    COUNTY_POINTS, LEVELS, LOCAL_TZ, WARNING_AREAS_BY_ID, ForecastStep, SmhiWeatherData, Warning, WeatherData, parse_position,
 )
 from src.services.market import _TTLCache
 
@@ -55,6 +56,27 @@ class WarningView:
 class WeatherOverview:
     places: list[PlaceForecast]
     warnings: list[WarningView]
+    updated_at: datetime
+    error: str | None = None
+
+
+@dataclass
+class MapRegion:
+    """One county on the weather map, with the forecast for its main town."""
+    id: int                       # county id (= SMHI warning area id)
+    name: str                     # county, e.g. "Stockholms län"
+    place: str                    # forecast point, e.g. "Stockholm"
+    lat: float
+    lon: float
+    warning_level: str | None = None   # highest active SMHI warning touching the county
+    steps: list[ForecastStep] = field(default_factory=list)
+    days: list[DayForecast] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
+class WeatherMap:
+    regions: list[MapRegion]
     updated_at: datetime
     error: str | None = None
 
@@ -113,6 +135,48 @@ class WeatherService:
             views.sort(key=lambda v: (-v.warning.rank, v.warning.start or now))
         return WeatherOverview(places=places, warnings=views, updated_at=datetime.now().astimezone(), error=error)
 
+    def forecast(self, lat: float, lon: float) -> list[ForecastStep]:
+        """Cached SMHI point forecast (shared by the place cards, the map and the energy outlook)."""
+        return self._cache.get(("forecast", round(lat, 3), round(lon, 3)), self.ttl,
+                               lambda: self.weather.forecast(lat, lon))
+
+    def map(self) -> WeatherMap:
+        """Forecasts for one town per county plus the highest active warning per county."""
+        now = self.now()
+        hour = now.replace(minute=0, second=0, microsecond=0)
+
+        def load(item: tuple[int, tuple[str, float, float]]) -> MapRegion:
+            county_id, (place, lat, lon) = item
+            region = MapRegion(id=county_id, name=WARNING_AREAS_BY_ID[county_id].name, place=place, lat=lat, lon=lon)
+            try:
+                steps = self.forecast(lat, lon)
+            except Exception as exc:
+                log.warning("Map forecast for %s failed", place, exc_info=True)
+                region.error = f"Prognosen kunde inte hämtas: {exc}"
+                return region
+            region.steps = [s for s in steps if s.time >= hour]
+            region.days = summarize_days(steps)
+            return region
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            regions = list(pool.map(load, COUNTY_POINTS.items()))
+
+        error = None
+        try:
+            warnings = self._cache.get("warnings", min(self.ttl, 300), self.weather.warnings)
+        except Exception as exc:
+            log.warning("Fetching SMHI warnings failed", exc_info=True)
+            warnings, error = [], f"SMHI-varningar kunde inte hämtas: {exc}"
+        by_id = {r.id: r for r in regions}
+        for w in warnings:
+            if (w.end and w.end < now) or w.level not in LEVELS[1:]:
+                continue  # MESSAGE (e.g. fire risk) is not shown on the map
+            for area_id in w.area_ids:
+                region = by_id.get(area_id)
+                if region and (region.warning_level is None or LEVELS.index(w.level) > LEVELS.index(region.warning_level)):
+                    region.warning_level = w.level
+        return WeatherMap(regions=regions, updated_at=datetime.now().astimezone(), error=error)
+
     def _place(self, name: str, symbol: str | None, item_id: int | None) -> PlaceForecast:
         position = parse_position(symbol)
         if position is None:
@@ -121,8 +185,7 @@ class WeatherService:
         lat, lon = position
         place = PlaceForecast(name=name, lat=lat, lon=lon, watch_item_id=item_id)
         try:
-            steps = self._cache.get(("forecast", round(lat, 3), round(lon, 3)), self.ttl,
-                                    lambda: self.weather.forecast(lat, lon))
+            steps = self.forecast(lat, lon)
         except Exception as exc:
             log.warning("Forecast for %s failed", name, exc_info=True)
             place.error = f"Prognosen kunde inte hämtas: {exc}"

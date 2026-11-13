@@ -231,6 +231,93 @@ class WeatherOverviewOut(BaseModel):
     error: str | None = None
 
 
+class MapRegionOut(ORM):
+    id: int                      # county id (= SMHI warning area id)
+    name: str
+    place: str                   # the town whose forecast represents the county
+    lat: float
+    lon: float
+    warning_level: str | None = None
+    steps: list[ForecastStepOut] = Field(default_factory=list)  # from the current hour, ~10 days
+    days: list[DayForecastOut] = Field(default_factory=list)
+    error: str | None = None
+
+
+class WeatherMapOut(ORM):
+    regions: list[MapRegionOut]
+    updated_at: datetime
+    error: str | None = None
+
+
+# ---- electricity (energy sections) ----
+
+class PricePointOut(ORM):
+    start: datetime
+    price: float                 # öre/kWh, spot price excl. VAT and fees
+
+
+class ZonePricesOut(ORM):
+    zone: str                    # SE1-SE4
+    name: str
+    now: float | None = None
+    today: list[PricePointOut] = Field(default_factory=list)     # hourly
+    tomorrow: list[PricePointOut] = Field(default_factory=list)  # empty until published (~13:00)
+    avg_today: float | None = None
+    avg_tomorrow: float | None = None
+
+
+class LiveOut(ORM):
+    time: datetime
+    production: dict[str, float]     # MW: nuclear, hydro, wind, solar, other
+    load: float | None
+    net_export: float | None         # MW, positive = export
+    flows: dict[str, float]          # MW per neighbouring country, positive = export from Sweden
+    flows_time: datetime | None = None
+
+
+class ReactorOut(ORM):
+    name: str
+    capacity: int
+    available: float
+    reason: str = ""
+    back_at: datetime | None = None
+    planned: bool = True
+
+
+class EnergyOverviewOut(ORM):
+    zone: str                        # the section's home zone
+    zones: list[ZonePricesOut]
+    live: LiveOut | None
+    reactors: list[ReactorOut]
+    nuclear_available: float
+    nuclear_capacity: int
+    updated_at: datetime
+    errors: list[str] = Field(default_factory=list)
+
+
+class OutlookDayOut(ORM):
+    date: date
+    temperature: float | None
+    normal_temperature: float | None
+    wind: float | None
+    nuclear_available: float
+    nuclear_out: list[str]
+    price: float | None              # published day-ahead average, öre/kWh
+    level: Literal["low", "normal", "high"]
+    reasons: list[str]
+
+
+class EnergyOutlookOut(ORM):
+    zone: str
+    days: list[OutlookDayOut]
+    headline: str
+    text: str
+    generator: str
+    recent_price: float | None
+    generated_at: datetime
+    errors: list[str] = Field(default_factory=list)
+
+
 # ---- articles, briefs, alerts ----
 
 class ArticleOut(ORM):

@@ -10,7 +10,7 @@ from datetime import date
 from pydantic import BaseModel
 
 from src.ai.base import (
-    BRIEF_SYSTEM, RATING_SYSTEM, ArticleInput, ArticleRating, BriefContent, RatingResult, SectionInput,
+    BRIEF_SYSTEM, ENERGY_SYSTEM, RATING_SYSTEM, ArticleInput, ArticleRating, BriefContent, OutlookText, RatingResult, SectionInput,
     Summarizer, SummarizerError, clean_brief, clean_ratings,
 )
 from src.settings import AISettings
@@ -52,6 +52,15 @@ class ClaudeSummarizer(Summarizer):
             effort=self.settings.brief_effort,
         )
         return clean_brief(brief, sections)
+
+    def energy_outlook(self, data: dict) -> OutlookText:
+        payload = json.dumps(data, ensure_ascii=False, indent=1)
+        return self._parse(
+            system=ENERGY_SYSTEM.format(language=self.settings.language),
+            user=f"<data>\n{payload}\n</data>",
+            output_format=OutlookText,
+            effort="low",
+        )
 
     def _parse(self, system: str, user: str, output_format: type[BaseModel], effort: str):
         response = self.client.beta.messages.parse(

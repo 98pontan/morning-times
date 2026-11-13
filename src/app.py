@@ -16,6 +16,7 @@ from src.scheduler import JobScheduler
 from src.seed import seed_if_empty
 from src.services.alerts import AlertService
 from src.services.brief import BriefService
+from src.services.energy import EnergyService
 from src.services.ingest import IngestService
 from src.services.market import MarketService
 from src.services.render import Renderer
@@ -36,12 +37,13 @@ class Services:
     brief: BriefService
     market: MarketService
     weather: WeatherService
+    energy: EnergyService
     scheduler: JobScheduler | None = None
 
     @classmethod
     def build(cls, settings: Settings, summarizer: Summarizer | None = None,
               notifier: Notifier | None = None, market: MarketService | None = None,
-              weather: WeatherService | None = None) -> "Services":
+              weather: WeatherService | None = None, energy: EnergyService | None = None) -> "Services":
         db = Database(settings.database.url)
         summarizer = summarizer or build_summarizer(settings.ai)
         notifier = notifier or build_notifier(settings.email)
@@ -54,6 +56,7 @@ class Services:
             brief=BriefService(db, summarizer, notifier, settings, renderer, weather),
             market=market or MarketService(),
             weather=weather,
+            energy=energy or EnergyService(weather=weather, summarizer=summarizer),
         )
 
 

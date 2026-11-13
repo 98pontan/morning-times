@@ -65,6 +65,17 @@ WARNING_AREAS: list[WarningArea] = [
 ]
 WARNING_AREAS_BY_ID: dict[int, WarningArea] = {a.id: a for a in WARNING_AREAS}
 
+# One forecast point per county for the weather map: the county seat (or its largest town). id = county id.
+COUNTY_POINTS: dict[int, tuple[str, float, float]] = {
+    1: ("Stockholm", 59.3293, 18.0686), 3: ("Uppsala", 59.8586, 17.6389), 4: ("Nyköping", 58.7530, 17.0079),
+    5: ("Linköping", 58.4108, 15.6214), 6: ("Jönköping", 57.7826, 14.1618), 7: ("Växjö", 56.8777, 14.8091),
+    8: ("Kalmar", 56.6634, 16.3568), 9: ("Visby", 57.6348, 18.2948), 10: ("Karlskrona", 56.1612, 15.5869),
+    12: ("Malmö", 55.6050, 13.0038), 13: ("Halmstad", 56.6745, 12.8578), 14: ("Göteborg", 57.7089, 11.9746),
+    17: ("Karlstad", 59.3793, 13.5036), 18: ("Örebro", 59.2753, 15.2134), 19: ("Västerås", 59.6099, 16.5448),
+    20: ("Falun", 60.6065, 15.6355), 21: ("Gävle", 60.6749, 17.1413), 22: ("Sundsvall", 62.3908, 17.3069),
+    23: ("Östersund", 63.1792, 14.6357), 24: ("Umeå", 63.8258, 20.2630), 25: ("Luleå", 65.5848, 22.1567),
+}
+
 # SMHI weather symbols (Wsymb2, 1-27), used by snow1g's symbol_code.
 SYMBOLS = {
     1: "Klart", 2: "Nästan klart", 3: "Växlande molnighet", 4: "Halvklart", 5: "Molnigt", 6: "Mulet",

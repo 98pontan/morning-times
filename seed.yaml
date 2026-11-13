@@ -1,6 +1,6 @@
 # Initial content, loaded only into an EMPTY database. Afterwards, edit everything through the API/frontend.
 #
-# Section kinds:  general | economy | sports | regional | weather   (GET /api/section-kinds)
+# Section kinds:  general | economy | sports | regional | weather | energy   (GET /api/section-kinds)
 # Watch types:    economy: stock, keyword | sports: team, keyword | regional: region, keyword | general: keyword
 #                 weather: warning_area (symbol = SMHI area id), place (symbol = "lat,lon"), keyword
 # Stocks use Yahoo Finance tickers (Stockholm: .ST suffix). Keywords decide which articles are "about" an item.
@@ -31,6 +31,12 @@ sections:
       # SMHI warning areas: GET /api/sections/<id>/warning-areas lists all counties and sea districts.
       - {type: warning_area, name: Stockholms län, symbol: "1", settings: {levels: [YELLOW, ORANGE]}}
       - {type: place, name: Stockholm, symbol: "59.3293,18.0686"}
+
+  - slug: el
+    name: El
+    kind: energy
+    settings:
+      zone: SE3          # your bidding zone: SE1 Luleå, SE2 Sundsvall, SE3 Stockholm, SE4 Malmö
 
   - slug: politik
     name: Politik

@@ -5,7 +5,7 @@ from src.sections import EconomySection
 from src.sections.market import MarketData, Quote
 from src.sources import RssFetcher
 
-from tests.conftest import feed_xml
+from tests.conftest import FakeSummarizer, feed_xml
 
 
 def test_rss_parse_cleans_html():
@@ -464,3 +464,167 @@ def test_weather_migration_adds_section_to_seeded_database(tmp_path):
                              {"id": section.id}).all()
     assert (section.slug, section.position) == ("vader", 4)
     assert [(i.type, i.symbol) for i in items] == [("warning_area", "1"), ("place", "59.3293,18.0686")]
+
+
+def test_weather_map_lists_every_county_with_warnings(env):
+    client, services, _, _ = _weather_env(env, _smhi_warnings("ORANGE", area_ids=(1, 3)))
+    result = client.get("/api/weather/map").json()
+    regions = {r["id"]: r for r in result["regions"]}
+    assert len(regions) == 21 and regions[1]["place"] == "Stockholm" and regions[25]["name"] == "Norrbottens län"
+    assert regions[1]["warning_level"] == "ORANGE" and regions[3]["warning_level"] == "ORANGE"
+    assert regions[12]["warning_level"] is None
+    # From the current hour (22:00 UTC is before the first step at 23:00 UTC), with day summaries.
+    assert regions[12]["steps"][0]["time"].startswith("2026-11-12T23:00") and regions[12]["days"]
+
+
+# ---- electricity ---------------------------------------------------------------------------
+
+def _price_payload(day: str, sek: float):
+    return [{"SEK_per_kWh": sek + q * 0.01, "EUR_per_kWh": 0, "EXR": 11,
+             "time_start": f"{day}T{h:02d}:{q * 15:02d}:00+01:00", "time_end": "x"}
+            for h in range(24) for q in range(4)]
+
+
+class FakeEnergy:
+    def __init__(self):
+        from src.sections.energy import parse_live, parse_outages
+        self.live_snapshot = parse_live(
+            {"unix_seconds": [1794547800, 1794548700],
+             "production_types": [
+                 {"name": "Nuclear", "data": [3667.0, None]}, {"name": "Hydro water reservoir", "data": [7523.4, None]},
+                 {"name": "Wind onshore", "data": [11021.0, None]}, {"name": "Solar", "data": [1.7, None]},
+                 {"name": "Others", "data": [1251.6, None]}, {"name": "Load", "data": [23877.0, None]},
+                 {"name": "Cross border electricity trading", "data": [-5139.8, None]},
+                 {"name": "Renewable share of load", "data": [77.7, None]}]},
+            {"unix_seconds": [1794545100], "countries": [
+                {"name": "Norway", "data": [-2.869]}, {"name": "Lithuania", "data": [0.461]}, {"name": "sum", "data": [-5.8]}]},
+        )
+        unit = lambda name, mw, start, stop, field="generationUnits": {
+            "isOutdated": False, "unavailabilityType": 2, "unavailabilityReason": "Delayed startup.",
+            field: [{"productionUnitName": None, "name": name, "fuelType": 14, "installedCapacity": mw,
+                     "timePeriods": [{"unavailableCapacity": mw, "eventStart": start, "eventStop": stop}]}]}
+        self.outage_list = parse_outages({"items": [
+            unit("Ringhals Block4", 1134, "2026-09-01T22:00:00Z", "2026-11-16T22:59:00Z"),
+            unit("Forsmark Block1 G11", 1098, "2026-09-06T10:00:00Z", "2026-11-17T11:00:00Z", "productionUnits"),
+            unit("Forsmark Block1 G11", 549, "2026-11-17T11:00:00Z", "2026-12-03T22:59:00Z"),
+            {**unit("Ringhals 3", 1081, "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z"), "isOutdated": True},
+        ]})
+
+    def prices(self, day, zone):
+        if day > date(2026, 11, 13):
+            return None  # tomorrow not published yet
+        from src.sections.energy import parse_prices
+        sek = 1.0 if day == date(2026, 11, 13) else 2.0
+        return parse_prices(_price_payload(day.isoformat(), sek * (2 if zone == "SE4" else 1)))
+
+    def live(self):
+        return self.live_snapshot
+
+    def outages(self, start, end):
+        return self.outage_list
+
+
+class OutlookSummarizer(FakeSummarizer):
+    def __init__(self, fail=False):
+        super().__init__()
+        self.fail, self.payloads = fail, []
+
+    def energy_outlook(self, data):
+        from src.ai.base import OutlookText
+        self.payloads.append(data)
+        if self.fail:
+            raise RuntimeError("quota")
+        return OutlookText(headline="Billigt idag", text="Det blåser.")
+
+
+def _energy_env(env, summarizer):
+    from datetime import datetime, timezone
+    from src.db.models import Section as S
+    from src.services.energy import EnergyService
+    from src.services.weather import WeatherService
+    client, services = env
+    now = lambda: datetime(2026, 11, 13, 8, 30, tzinfo=timezone.utc)
+    weather = WeatherService(FakeWeather(), now=now)
+    services.energy = EnergyService(FakeEnergy(), weather=weather, summarizer=summarizer, now=now)
+    with services.db.session() as session:
+        section = S(slug="el", name="El", kind="energy", position=10, settings={"zone": "se4"})
+        session.add(section)
+        session.flush()
+        return client, services, section.id
+
+
+def test_energy_overview(env):
+    client, services, el = _energy_env(env, OutlookSummarizer())
+    result = client.get(f"/api/sections/{el}/energy").json()
+    assert result["zone"] == "SE4" and result["errors"] == []
+    zones = {z["zone"]: z for z in result["zones"]}
+    # Quarter-hours become hourly averages in öre/kWh; 08:30 UTC is the 09:00 hour in Sweden.
+    assert len(zones["SE3"]["today"]) == 24 and zones["SE3"]["now"] == 101.5 and zones["SE3"]["avg_today"] == 101.5
+    assert zones["SE4"]["avg_today"] == 201.5 and zones["SE3"]["tomorrow"] == [] and zones["SE3"]["avg_tomorrow"] is None
+    live = result["live"]
+    assert live["production"] == {"nuclear": 3667, "hydro": 7523, "wind": 11021, "solar": 2, "other": 1252}
+    assert live["net_export"] == 5139.8 and live["flows"] == {"Norge": 2869, "Litauen": -461}
+    reactors = {r["name"]: r for r in result["reactors"]}
+    assert reactors["Ringhals 4"]["available"] == 0 and reactors["Ringhals 4"]["back_at"].startswith("2026-11-16T22:59")
+    # Forsmark 1 comes back in two steps; "fully back" is the end of the second.
+    assert reactors["Forsmark 1"]["available"] == 6 and reactors["Forsmark 1"]["back_at"].startswith("2026-12-03")
+    assert reactors["Ringhals 3"]["available"] == 1081 and reactors["Ringhals 3"]["back_at"] is None
+    assert result["nuclear_available"] == 7012 - 1134 - 1098
+    ekonomi = next(s for s in client.get("/api/sections").json() if s["slug"] == "ekonomi")
+    assert client.get(f"/api/sections/{ekonomi['id']}/energy").status_code == 422
+
+
+def test_energy_outlook_ai_text_and_rules_fallback(env):
+    summarizer = OutlookSummarizer()
+    client, services, el = _energy_env(env, summarizer)
+    result = client.get(f"/api/sections/{el}/energy/outlook").json()
+    assert (result["headline"], result["text"], result["generator"]) == ("Billigt idag", "Det blåser.", "fake")
+    days = result["days"]
+    assert len(days) == 7 and days[0]["date"] == "2026-11-13"
+    # Today's published price (201.5) is far below last week's (401.5): low, whatever the weather says.
+    assert result["recent_price"] == 401.5 and days[0]["price"] == 201.5 and days[0]["level"] == "low"
+    assert days[0]["nuclear_out"] == ["Forsmark 1", "Ringhals 4"] and days[0]["nuclear_available"] == 7012 - 1134 - 1098
+    # Tuesday 17/11: Ringhals 4 is back and Forsmark 1 half back (549 MW out, so not counted as "out").
+    assert days[4]["nuclear_out"] == [] and days[4]["nuclear_available"] == 7012 - 549
+    payload = summarizer.payloads[0]
+    assert payload["zone"] == "SE4" and {r["name"] for r in payload["reactors"]} == {"Forsmark 1", "Ringhals 4"}
+    # Cached: a second request does not call the AI again.
+    client.get(f"/api/sections/{el}/energy/outlook")
+    assert len(summarizer.payloads) == 1
+
+    # AI failure: template text, and the error is shown.
+    services.energy.summarizer = OutlookSummarizer(fail=True)
+    services.energy._outlook.clear()
+    result = client.get(f"/api/sections/{el}/energy/outlook").json()
+    assert result["generator"] == "rules" and "quota" in result["errors"][0]
+    assert result["text"].startswith("Idag:") and "Ringhals 4 väntas vara tillbaka i full drift måndag 16/11" in result["text"]
+
+
+def test_energy_rate_day():
+    from datetime import date as d
+    from src.sections.energy import OutlookDay
+    from src.services.energy import rate_day
+    cold_calm = rate_day(OutlookDay(date=d(2026, 11, 16), temperature=-6, normal_temperature=3.5, wind=2.0,
+                                    nuclear_available=3700, nuclear_out=["Ringhals 3", "Ringhals 4", "Forsmark 1"]))
+    assert cold_calm.level == "high" and cold_calm.reasons == ["mycket kallt", "svag vind", "3 reaktorer ur drift"]
+    windy = rate_day(OutlookDay(date=d(2026, 11, 16), temperature=4, normal_temperature=3.5, wind=6.5,
+                                nuclear_available=7012))
+    assert windy.level == "low" and windy.reasons == ["mycket blåsigt"]
+
+
+def test_energy_migration_adds_section_to_seeded_database(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, text
+    url = f"sqlite:///{tmp_path}/m.db"
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "0001")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO sections (slug, name, kind, enabled, position, settings) "
+                          "VALUES ('sverige', 'Sverige', 'general', 1, 3, '{}')"))
+    command.upgrade(cfg, "head")
+    with engine.begin() as conn:
+        section = conn.execute(text("SELECT slug, name, position, settings FROM sections WHERE kind = 'energy'")).one()
+    assert (section.slug, section.name, section.position) == ("el", "El", 5) and "SE3" in section.settings

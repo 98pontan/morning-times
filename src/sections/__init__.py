@@ -174,8 +174,19 @@ class WeatherSection(SectionPlugin):
         )
 
 
+class EnergySection(SectionPlugin):
+    """Electricity: spot prices per bidding zone, production, nuclear status and a weekly price outlook.
+
+    Section settings: zone = the reader's bidding zone, SE1-SE4 (default SE3). Keywords highlight news.
+    """
+
+    kind = "energy"
+    description = "Electricity. Spot prices (settings.zone = SE1-SE4), production, nuclear status, weekly outlook."
+
+
 PLUGINS: dict[str, SectionPlugin] = {
-    p.kind: p for p in [GeneralSection(), RegionalSection(), SportsSection(), EconomySection(), WeatherSection()]
+    p.kind: p for p in [GeneralSection(), RegionalSection(), SportsSection(), EconomySection(), WeatherSection(),
+                        EnergySection()]
 }
 
 
@@ -186,4 +197,4 @@ def get_plugin(kind: str) -> SectionPlugin:
         raise ValueError(f"Unknown section kind '{kind}'. Available: {sorted(PLUGINS)}") from None
 
 
-__all__ = ["AlertCandidate", "SectionPlugin", "PLUGINS", "get_plugin", "EconomySection", "WeatherSection"]
+__all__ = ["AlertCandidate", "SectionPlugin", "PLUGINS", "get_plugin", "EconomySection", "WeatherSection", "EnergySection"]

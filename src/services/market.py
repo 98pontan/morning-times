@@ -80,6 +80,14 @@ class _TTLCache:
             self._data[key] = (now, value)
         return value
 
+    def __contains__(self, key) -> bool:
+        return key in self._data
+
+    def peek(self, key, default=None):
+        """The cached value regardless of age, without loading."""
+        hit = self._data.get(key)
+        return hit[1] if hit else default
+
 
 def _pct(now: float, then: float | None) -> float | None:
     return (now - then) / then * 100 if then else None

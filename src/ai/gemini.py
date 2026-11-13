@@ -14,7 +14,7 @@ from datetime import date
 from pydantic import BaseModel, ValidationError
 
 from src.ai.base import (
-    BRIEF_SYSTEM, RATING_SYSTEM, ArticleInput, ArticleRating, BriefContent, RatingResult, SectionInput,
+    BRIEF_SYSTEM, ENERGY_SYSTEM, RATING_SYSTEM, ArticleInput, ArticleRating, BriefContent, OutlookText, RatingResult, SectionInput,
     Summarizer, SummarizerError, clean_brief, clean_ratings,
 )
 from src.settings import AISettings
@@ -50,6 +50,11 @@ class GeminiSummarizer(Summarizer):
         brief = self._generate(BRIEF_SYSTEM.format(language=self.settings.language),
                                f"<news>\n{payload}\n</news>", BriefContent, self.settings.brief_effort)
         return clean_brief(brief, sections)
+
+    def energy_outlook(self, data: dict) -> OutlookText:
+        payload = json.dumps(data, ensure_ascii=False, indent=1)
+        return self._generate(ENERGY_SYSTEM.format(language=self.settings.language),
+                              f"<data>\n{payload}\n</data>", OutlookText, "low")
 
     def _generate(self, system: str, user: str, output: type[BaseModel], effort: str):
         try:

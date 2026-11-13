@@ -299,6 +299,33 @@ def weather_overview(section_id: int, session: Session = Depends(get_session), s
     )
 
 
+@api.get("/weather/map", response_model=s.WeatherMapOut)
+def weather_map(svc=Depends(services)):
+    """SMHI forecasts for one town per county and the highest active warning per county (cached ~10 min)."""
+    return svc.weather.map()
+
+
+# ---- electricity (energy sections) -------------------------------------------------------
+
+def _energy_section(session: Session, section_id: int) -> Section:
+    section = _get(session, Section, section_id)
+    if section.kind != "energy":
+        raise HTTPException(422, f"Only energy sections have this, '{section.slug}' is {section.kind}")
+    return section
+
+
+@api.get("/sections/{section_id}/energy", response_model=s.EnergyOverviewOut)
+def energy_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
+    """Spot prices for SE1-SE4, near-live production and flows, and nuclear status (cached 5-60 min)."""
+    return svc.energy.overview(_energy_section(session, section_id))
+
+
+@api.get("/sections/{section_id}/energy/outlook", response_model=s.EnergyOutlookOut)
+def energy_outlook(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
+    """Weekly price outlook from weather, wind and nuclear availability (text cached ~3 h)."""
+    return svc.energy.outlook(_energy_section(session, section_id))
+
+
 # ---- watch items (stocks, teams, regions, keywords) -------------------------------------
 
 @api.get("/sections/{section_id}/watch-items", response_model=list[s.WatchItemOut])
