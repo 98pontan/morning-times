@@ -2,6 +2,8 @@ name: Morning Times CI
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -42,10 +44,14 @@ jobs:
         uses: https://github.com/docker/metadata-action@v5
         with:
           images: ${{ steps.registry.outputs.host }}/${{ github.repository }}
+          # main -> latest, any branch -> its name, tag v0.1.0 -> 0.1.0 and 0.1.
+          # Only main moves `latest`, so pushing a feature branch never changes what the cluster runs.
           tags: |
             type=ref,event=branch
             type=sha,format=short
-            latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
         uses: https://github.com/docker/build-push-action@v5

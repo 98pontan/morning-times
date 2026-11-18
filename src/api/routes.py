@@ -1,8 +1,14 @@
-"""REST API used by the frontend. Everything configurable is editable here."""
+"""REST API used by the frontend. Everything configurable is editable here.
+
+With login on (settings.auth), anyone can read, but changes need a logged-in member of the required
+group (`editor`), and watches are personal: visitors see the default watches (owner NULL), a logged-in
+user sees and edits their own.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -11,13 +17,17 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from src import __version__
 from src.api import schemas as s
-from src.db.models import Alert, Article, Brief, Section, Source, WatchItem, utcnow
+from src.auth import AuthError
+from src.db.models import Alert, Article, Brief, Section, Source, User, WatchItem, utcnow
 from src.sections import PLUGINS, WeatherSection, get_plugin
+from src.sections.base import SectionView
 from src.sections.regions import REGIONS, REGIONS_BY_SLUG, Region
 from src.services.ingest import rematch_section
 from src.sections.weather import DEFAULT_ALERT_LEVELS, WARNING_AREAS, WARNING_AREAS_BY_ID
 from src.services.market import RANGES
+from src.services.users import user_for
 from src.sources import FETCHERS
 
 router = APIRouter()
@@ -50,6 +60,55 @@ def _get(session: Session, model, obj_id: int):
     return obj
 
 
+# ---- who is asking ------------------------------------------------------------------------
+
+@dataclass
+class Viewer:
+    user: User | None
+    login_enabled: bool
+
+    @property
+    def owner_id(self) -> int | None:
+        """Whose watches to show and edit: the user's own, or the defaults (None)."""
+        return self.user.id if self.user else None
+
+    def owns(self, item: WatchItem) -> bool:
+        return item.owner_id == self.owner_id
+
+
+def viewer(request: Request, session: Session = Depends(get_session), svc=Depends(services)) -> Viewer:
+    if svc.verifier is None:
+        return Viewer(user=None, login_enabled=False)
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("bearer "):
+        return Viewer(user=None, login_enabled=True)
+    try:
+        identity = svc.verifier.verify(header[7:].strip())
+    except AuthError as exc:
+        raise HTTPException(exc.status, exc.message,
+                            headers={"WWW-Authenticate": "Bearer"} if exc.status == 401 else None) from exc
+    return Viewer(user=user_for(session, identity), login_enabled=True)
+
+
+def editor(v: Viewer = Depends(viewer)) -> Viewer:
+    """Changes need a logged-in user when login is on."""
+    if v.login_enabled and v.user is None:
+        raise HTTPException(401, "Logga in för att ändra", headers={"WWW-Authenticate": "Bearer"})
+    return v
+
+
+def ScopedSection(section: Section, v: Viewer) -> SectionView:
+    """A section as one viewer sees it: only their own watch items."""
+    return SectionView(section, [w for w in section.watch_items if v.owns(w)])
+
+
+def _owned_item(session: Session, item_id: int, v: Viewer) -> WatchItem:
+    item = _get(session, WatchItem, item_id)
+    if not v.owns(item):
+        raise HTTPException(404, f"WatchItem {item_id} not found")
+    return item
+
+
 def _apply(obj, patch) -> None:
     for key, value in patch.model_dump(exclude_unset=True).items():
         setattr(obj, key, value)
@@ -65,11 +124,29 @@ def health(svc=Depends(services)):
         raise HTTPException(503, f"database unavailable: {exc}") from exc
     if svc.scheduler is not None and not svc.scheduler.running:
         raise HTTPException(503, "scheduler not running")
-    return {"status": "ok"}
+    return {"status": "ok", "version": __version__}
+
+
+@api.get("/auth", response_model=s.AuthConfigOut)
+def auth_config(svc=Depends(services)):
+    """What the UI needs to log in (public)."""
+    auth = svc.settings.auth
+    return s.AuthConfigOut(enabled=auth.enabled, issuer=auth.issuer.rstrip("/"), client_id=auth.client_id,
+                           required_group=auth.required_group, version=__version__)
+
+
+@api.get("/me", response_model=s.MeOut)
+def me(v: Viewer = Depends(viewer)):
+    """The logged-in user, or 401 (the UI uses this to check its token)."""
+    if v.user is None:
+        if not v.login_enabled:
+            return s.MeOut(username="local", name="Lokal användare", email=None, login_enabled=False)
+        raise HTTPException(401, "Inte inloggad", headers={"WWW-Authenticate": "Bearer"})
+    return s.MeOut(username=v.user.username, name=v.user.name, email=v.user.email, login_enabled=True)
 
 
 @api.get("/config")
-def show_config(svc=Depends(services)):
+def show_config(svc=Depends(services), _: Viewer = Depends(editor)):
     return {
         "settings": svc.settings.public_dict(),
         "summarizer": svc.summarizer.name,
@@ -93,7 +170,7 @@ def list_sections(session: Session = Depends(get_session)):
 
 
 @api.post("/sections", response_model=s.SectionOut, status_code=201)
-def create_section(body: s.SectionIn, session: Session = Depends(get_session)):
+def create_section(body: s.SectionIn, session: Session = Depends(get_session), _: Viewer = Depends(editor)):
     _check_kind(body.kind)
     section = Section(**body.model_dump())
     session.add(section)
@@ -107,14 +184,15 @@ def get_section(section_id: int, session: Session = Depends(get_session)):
 
 
 @api.patch("/sections/{section_id}", response_model=s.SectionOut)
-def update_section(section_id: int, body: s.SectionPatch, session: Session = Depends(get_session)):
+def update_section(section_id: int, body: s.SectionPatch, session: Session = Depends(get_session),
+                   _: Viewer = Depends(editor)):
     section = _get(session, Section, section_id)
     _apply(section, body)
     return section
 
 
 @api.delete("/sections/{section_id}", status_code=204)
-def delete_section(section_id: int, session: Session = Depends(get_session)):
+def delete_section(section_id: int, session: Session = Depends(get_session), _: Viewer = Depends(editor)):
     session.delete(_get(session, Section, section_id))
     return Response(status_code=204)
 
@@ -132,7 +210,8 @@ def list_sources(section_id: int, session: Session = Depends(get_session)):
 
 
 @api.post("/sections/{section_id}/sources", response_model=s.SourceOut, status_code=201)
-def create_source(section_id: int, body: s.SourceIn, session: Session = Depends(get_session)):
+def create_source(section_id: int, body: s.SourceIn, session: Session = Depends(get_session),
+                  _: Viewer = Depends(editor)):
     _get(session, Section, section_id)
     if body.kind not in FETCHERS:
         raise HTTPException(422, f"Unknown source kind '{body.kind}'. Available: {sorted(FETCHERS)}")
@@ -143,14 +222,15 @@ def create_source(section_id: int, body: s.SourceIn, session: Session = Depends(
 
 
 @api.patch("/sources/{source_id}", response_model=s.SourceOut)
-def update_source(source_id: int, body: s.SourcePatch, session: Session = Depends(get_session)):
+def update_source(source_id: int, body: s.SourcePatch, session: Session = Depends(get_session),
+                  _: Viewer = Depends(editor)):
     source = _get(session, Source, source_id)
     _apply(source, body)
     return source
 
 
 @api.delete("/sources/{source_id}", status_code=204)
-def delete_source(source_id: int, session: Session = Depends(get_session)):
+def delete_source(source_id: int, session: Session = Depends(get_session), _: Viewer = Depends(editor)):
     session.delete(_get(session, Source, source_id))
     return Response(status_code=204)
 
@@ -180,7 +260,7 @@ def list_regions(section_id: int, session: Session = Depends(get_session)):
 @api.put("/sections/{section_id}/regions/{slug}", response_model=s.RegionOut)
 def set_region(
     section_id: int, slug: str, body: s.RegionPatch,
-    session: Session = Depends(get_session), svc=Depends(services),
+    session: Session = Depends(get_session), svc=Depends(services), _: Viewer = Depends(editor),
 ):
     """Pick or un-pick a region: adds/enables its feed, or disables it (kept, so it can be re-picked)."""
     section = _regional_section(session, section_id)
@@ -204,7 +284,8 @@ def set_region(
 # ---- stock screen (economy sections) ----------------------------------------------------
 
 @api.get("/sections/{section_id}/market", response_model=s.MarketOverviewOut)
-def market_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
+def market_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services),
+                    v: Viewer = Depends(viewer)):
     """Prices and development for the section's watched stocks and its reference index (cached ~2 min)."""
     section = session.scalar(
         select(Section).where(Section.id == section_id).options(selectinload(Section.watch_items))
@@ -213,7 +294,7 @@ def market_overview(section_id: int, session: Session = Depends(get_session), sv
         raise HTTPException(404, f"Section {section_id} not found")
     if section.kind != "economy":
         raise HTTPException(422, f"Only economy sections have a stock screen, '{section.slug}' is {section.kind}")
-    return svc.market.overview(section)
+    return svc.market.overview(ScopedSection(section, v))
 
 
 @api.get("/market/chart", response_model=s.ChartOut)
@@ -229,7 +310,7 @@ def market_chart(
 
 # ---- weather (weather sections) ----------------------------------------------------------
 
-def _weather_section(session: Session, section_id: int) -> Section:
+def _weather_section(session: Session, section_id: int, v: Viewer) -> SectionView:
     section = session.scalar(
         select(Section).where(Section.id == section_id).options(selectinload(Section.watch_items))
     )
@@ -237,7 +318,7 @@ def _weather_section(session: Session, section_id: int) -> Section:
         raise HTTPException(404, f"Section {section_id} not found")
     if section.kind != "weather":
         raise HTTPException(422, f"Only weather sections have this, '{section.slug}' is {section.kind}")
-    return section
+    return ScopedSection(section, v)
 
 
 def _area_item(section: Section, area_id: int) -> WatchItem | None:
@@ -254,24 +335,25 @@ def _area_out(section: Section, area, item: WatchItem | None) -> s.WarningAreaOu
 
 
 @api.get("/sections/{section_id}/warning-areas", response_model=list[s.WarningAreaOut])
-def list_warning_areas(section_id: int, session: Session = Depends(get_session)):
+def list_warning_areas(section_id: int, session: Session = Depends(get_session), v: Viewer = Depends(viewer)):
     """SMHI counties and sea districts, with whether warnings for them are followed and at which levels."""
-    section = _weather_section(session, section_id)
+    section = _weather_section(session, section_id, v)
     return [_area_out(section, a, _area_item(section, a.id)) for a in WARNING_AREAS]
 
 
 @api.put("/sections/{section_id}/warning-areas/{area_id}", response_model=s.WarningAreaOut)
 def set_warning_area(section_id: int, area_id: int, body: s.WarningAreaPatch,
-                     session: Session = Depends(get_session)):
+                     session: Session = Depends(get_session), v: Viewer = Depends(editor)):
     """Follow (or stop following) SMHI warnings for an area, and choose which levels are emailed."""
-    section = _weather_section(session, section_id)
+    section = _weather_section(session, section_id, v)
     area = WARNING_AREAS_BY_ID.get(area_id)
     if area is None:
         raise HTTPException(404, f"Unknown SMHI warning area {area_id}")
     item = _area_item(section, area_id)
     if item is None and body.enabled:
         item = WatchItem(section_id=section.id, type="warning_area", name=area.name, symbol=str(area.id),
-                         keywords=[], settings={})
+                         keywords=[], settings={}, owner_id=v.owner_id)
+        session.add(item)
         section.watch_items.append(item)
     if item is not None:
         item.enabled = body.enabled
@@ -282,9 +364,10 @@ def set_warning_area(section_id: int, area_id: int, body: s.WarningAreaPatch,
 
 
 @api.get("/sections/{section_id}/weather", response_model=s.WeatherOverviewOut)
-def weather_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
+def weather_overview(section_id: int, session: Session = Depends(get_session), svc=Depends(services),
+                     v: Viewer = Depends(viewer)):
     """Forecasts for the section's places and current SMHI warnings for its areas (cached ~10 min)."""
-    overview = svc.weather.overview(_weather_section(session, section_id))
+    overview = svc.weather.overview(_weather_section(session, section_id, v))
     return s.WeatherOverviewOut(
         places=overview.places, updated_at=overview.updated_at, error=overview.error,
         warnings=[
@@ -322,24 +405,25 @@ def energy_overview(section_id: int, session: Session = Depends(get_session), sv
 
 @api.get("/sections/{section_id}/energy/outlook", response_model=s.EnergyOutlookOut)
 def energy_outlook(section_id: int, session: Session = Depends(get_session), svc=Depends(services)):
-    """Weekly price outlook from weather, wind and nuclear availability (text cached ~3 h)."""
+    """Weekly price outlook from weather, wind and nuclear availability (written once per zone and day)."""
     return svc.energy.outlook(_energy_section(session, section_id))
 
 
 # ---- watch items (stocks, teams, regions, keywords) -------------------------------------
 
 @api.get("/sections/{section_id}/watch-items", response_model=list[s.WatchItemOut])
-def list_watch_items(section_id: int, session: Session = Depends(get_session)):
-    return _get(session, Section, section_id).watch_items
+def list_watch_items(section_id: int, session: Session = Depends(get_session), v: Viewer = Depends(viewer)):
+    return [w for w in _get(session, Section, section_id).watch_items if v.owns(w)]
 
 
 @api.post("/sections/{section_id}/watch-items", response_model=s.WatchItemOut, status_code=201)
-def create_watch_item(section_id: int, body: s.WatchItemIn, session: Session = Depends(get_session)):
+def create_watch_item(section_id: int, body: s.WatchItemIn, session: Session = Depends(get_session),
+                      v: Viewer = Depends(editor)):
     section = _get(session, Section, section_id)
     plugin = get_plugin(section.kind)
     if body.type not in plugin.item_types:
         raise HTTPException(422, f"A {section.kind} section can watch {sorted(plugin.item_types)}, not '{body.type}'")
-    item = WatchItem(section_id=section_id, **body.model_dump())
+    item = WatchItem(section_id=section_id, owner_id=v.owner_id, **body.model_dump())
     session.add(item)
     session.flush()
     rematch_section(session, section)
@@ -347,8 +431,9 @@ def create_watch_item(section_id: int, body: s.WatchItemIn, session: Session = D
 
 
 @api.patch("/watch-items/{item_id}", response_model=s.WatchItemOut)
-def update_watch_item(item_id: int, body: s.WatchItemPatch, session: Session = Depends(get_session)):
-    item = _get(session, WatchItem, item_id)
+def update_watch_item(item_id: int, body: s.WatchItemPatch, session: Session = Depends(get_session),
+                      v: Viewer = Depends(editor)):
+    item = _owned_item(session, item_id, v)
     _apply(item, body)
     session.flush()
     rematch_section(session, item.section)
@@ -356,8 +441,8 @@ def update_watch_item(item_id: int, body: s.WatchItemPatch, session: Session = D
 
 
 @api.delete("/watch-items/{item_id}", status_code=204)
-def delete_watch_item(item_id: int, session: Session = Depends(get_session)):
-    session.delete(_get(session, WatchItem, item_id))
+def delete_watch_item(item_id: int, session: Session = Depends(get_session), v: Viewer = Depends(editor)):
+    session.delete(_owned_item(session, item_id, v))
     return Response(status_code=204)
 
 
@@ -371,7 +456,9 @@ def list_articles(
     hours: int = Query(24, ge=1, le=24 * 30),
     limit: int = Query(50, ge=1, le=500),
     session: Session = Depends(get_session),
+    v: Viewer = Depends(viewer),
 ):
+    owner = WatchItem.owner_id.is_(None) if v.owner_id is None else WatchItem.owner_id == v.owner_id
     query = (
         select(Article).join(Section).outerjoin(Source, Article.source_id == Source.id)
         # Articles from a disabled source (e.g. an un-picked region) are hidden.
@@ -385,13 +472,13 @@ def list_articles(
     if source_id is not None:
         query = query.where(Article.source_id == source_id)
     if watched_only:
-        query = query.where(Article.watch_items.any())
+        query = query.where(Article.watch_items.any(owner))
     return [
         s.ArticleOut(
             id=a.id, section_id=a.section_id, source_id=a.source_id, url=a.url, title=a.title, summary=a.summary,
             source=a.source.name if a.source else None, published_at=a.published_at,
             importance=a.importance, importance_reason=a.importance_reason,
-            watched=[w.name for w in a.watch_items],
+            watched=[w.name for w in a.watch_items if v.owns(w)],
         )
         for a in session.scalars(query).all()
     ]
@@ -426,24 +513,31 @@ def get_brief_html(day: date, session: Session = Depends(get_session)):
 
 
 @api.post("/briefs/generate", response_model=s.BriefOut)
-def generate_brief(send: bool = False, svc=Depends(services)):
+def generate_brief(send: bool = False, svc=Depends(services), _: Viewer = Depends(editor)):
     return svc.brief.generate(send=send)
 
 
 @api.get("/alerts", response_model=list[s.AlertOut])
-def list_alerts(limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
-    return session.scalars(select(Alert).order_by(Alert.created_at.desc()).limit(limit)).all()
+def list_alerts(limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session),
+                v: Viewer = Depends(viewer)):
+    """The viewer's own alerts; visitors see none when login is on."""
+    query = select(Alert).order_by(Alert.created_at.desc()).limit(limit)
+    if v.login_enabled:
+        if v.user is None:
+            return []
+        query = query.where(Alert.user_id == v.user.id)
+    return session.scalars(query).all()
 
 
 # ---- manual job triggers -----------------------------------------------------------------
 
 @api.post("/jobs/ingest")
-def run_ingest(svc=Depends(services)):
+def run_ingest(svc=Depends(services), _: Viewer = Depends(editor)):
     return svc.ingest.run().__dict__
 
 
 @api.post("/jobs/alerts")
-def run_alerts(svc=Depends(services)):
+def run_alerts(svc=Depends(services), _: Viewer = Depends(editor)):
     return svc.alerts.run().__dict__
 
 

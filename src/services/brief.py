@@ -14,6 +14,7 @@ from src.db.database import Database
 from src.db.models import Article, Brief, Section, Source, utcnow
 from src.notifier import Notifier
 from src.sections import get_plugin
+from src.sections.base import SectionView
 from src.services.render import Renderer
 from src.services.weather import WeatherService
 from src.settings import Settings
@@ -78,8 +79,10 @@ class BriefService:
             select(Section).where(Section.enabled, Section.kind == "weather").order_by(Section.position)
             .options(selectinload(Section.watch_items))
         ).all()
+        # Default places and warning areas only (read-only views, the sections themselves are not changed).
+        views = [SectionView(s, [w for w in s.watch_items if w.owner_id is None]) for s in sections]
         try:
-            return self.weather.brief_snapshot(list(sections))
+            return self.weather.brief_snapshot(views)
         except Exception:
             log.exception("Weather for the brief failed")
             return None
@@ -104,17 +107,19 @@ class BriefService:
                 .limit(limit * 3)
             ).all()
             # Watched and important first, then newest.
-            rows = sorted(rows, key=lambda a: (bool(a.watch_items), a.importance or 0, a.published_at),
+            # The brief is shared: only the default watches (no owner) count, not users' personal ones.
+            rows = sorted(rows, key=lambda a: (any(w.owner_id is None for w in a.watch_items), a.importance or 0,
+                                               a.published_at),
                           reverse=True)[:limit]
             names[section.slug] = section.name
             inputs.append(SectionInput(
                 slug=section.slug, name=section.name,
-                watched=[plugin.describe_item(w) for w in section.watch_items if w.enabled],
+                watched=[plugin.describe_item(w) for w in section.watch_items if w.enabled and w.owner_id is None],
                 articles=[
                     ArticleInput(
                         id=a.id, title=a.title, summary=a.summary[:400],
                         source=a.source.name if a.source else "", published=a.published_at.isoformat(),
-                        watched=[w.name for w in a.watch_items],
+                        watched=[w.name for w in a.watch_items if w.owner_id is None],
                     )
                     for a in rows
                 ],

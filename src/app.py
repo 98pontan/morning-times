@@ -8,7 +8,10 @@ from dataclasses import dataclass
 
 from fastapi import FastAPI
 
+from src import __version__
+
 from src.ai import Summarizer, build_summarizer
+from src.auth import TokenVerifier
 from src.api.routes import router
 from src.db.database import Database
 from src.notifier import Notifier, build_notifier
@@ -38,12 +41,14 @@ class Services:
     market: MarketService
     weather: WeatherService
     energy: EnergyService
+    verifier: TokenVerifier | None = None
     scheduler: JobScheduler | None = None
 
     @classmethod
     def build(cls, settings: Settings, summarizer: Summarizer | None = None,
               notifier: Notifier | None = None, market: MarketService | None = None,
-              weather: WeatherService | None = None, energy: EnergyService | None = None) -> "Services":
+              weather: WeatherService | None = None, energy: EnergyService | None = None,
+              verifier: TokenVerifier | None = None) -> "Services":
         db = Database(settings.database.url)
         summarizer = summarizer or build_summarizer(settings.ai)
         notifier = notifier or build_notifier(settings.email)
@@ -52,11 +57,13 @@ class Services:
         return cls(
             settings=settings, db=db, summarizer=summarizer, notifier=notifier,
             ingest=IngestService(db),
-            alerts=AlertService(db, summarizer, notifier, settings.ai, renderer),
+            alerts=AlertService(db, summarizer, notifier, settings.ai, renderer,
+                                default_alerts=not settings.auth.enabled),
             brief=BriefService(db, summarizer, notifier, settings, renderer, weather),
             market=market or MarketService(),
             weather=weather,
             energy=energy or EnergyService(weather=weather, summarizer=summarizer),
+            verifier=verifier or (TokenVerifier(settings.auth) if settings.auth.enabled else None),
         )
 
 
@@ -73,7 +80,8 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
                 settings.scheduler, services.ingest, services.alerts, services.brief
             )
             services.scheduler.start()
-        log.info("Morning Times started (summarizer: %s)", services.summarizer.name)
+        log.info("Morning Times %s started (summarizer: %s, login: %s)", __version__, services.summarizer.name,
+                 "on" if settings.auth.enabled else "off")
         yield
         if services.scheduler:
             services.scheduler.shutdown()
@@ -81,7 +89,7 @@ def create_app(settings: Settings, services: Services | None = None) -> FastAPI:
     app = FastAPI(
         title="The Morning Times",
         description="Configurable news aggregator with a daily AI-written morning brief.",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.services = services

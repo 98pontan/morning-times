@@ -27,6 +27,14 @@ email:
     - pjirbratt@yahoo.com
   password_env: EMAIL_PASSWORD
 
+# Keycloak login. Off: anyone can change everything (local development).
+# On: anyone can read; changes need a logged-in member of required_group, and watches are personal.
+auth:
+  enabled: false
+  issuer: https://keycloak.pontus-homelab.space/auth/realms/homelab
+  client_id: morning-times
+  required_group: newspaper
+
 ai:
   # auto | claude | gemini | mistral | openrouter | ollama | rules
   # auto = claude if ANTHROPIC_API_KEY is set, else the first available provider in fallbacks, else rules (no AI).

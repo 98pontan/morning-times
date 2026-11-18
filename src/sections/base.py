@@ -19,6 +19,17 @@ class AlertCandidate:
     watch_item_id: int | None = None
 
 
+class SectionView:
+    """A section with only some of its watch items, e.g. one user's. Read-only: never add it to a session."""
+
+    def __init__(self, section: Section, watch_items: list[WatchItem]):
+        self._section = section
+        self.watch_items = watch_items
+
+    def __getattr__(self, name):
+        return getattr(self._section, name)
+
+
 @lru_cache(maxsize=2048)
 def _pattern(term: str) -> re.Pattern:
     # Whole word, case-insensitive, allowing a Swedish genitive: "Volvo" matches "Volvos" and "AIK" matches "AIK:s",

@@ -76,8 +76,29 @@ class WatchItem(Base):
     keywords: Mapped[list] = mapped_column(JSON, default=list)
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The user who follows this; NULL = a default watch, shown to visitors who are not logged in
+    # (and copied to each user at first login).
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
     section: Mapped[Section] = relationship(back_populates="watch_items")
+    owner: Mapped[User | None] = relationship(back_populates="watch_items")
+
+
+class User(Base):
+    """A Keycloak user, created at first login. Identified by the token's `sub`."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), unique=True)
+    username: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255), default="")
+    # Alert emails for the user's watches go here (from Keycloak, updated at each login).
+    email: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    watch_items: Mapped[list[WatchItem]] = relationship(back_populates="owner", cascade="all, delete-orphan")
 
 
 class Article(Base):
@@ -128,6 +149,8 @@ class Alert(Base):
     kind: Mapped[str] = mapped_column(String(32))
     watch_item_id: Mapped[int | None] = mapped_column(ForeignKey("watch_items.id", ondelete="SET NULL"))
     article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="SET NULL"))
+    # Who gets the email: the watch's owner, or NULL = email.recipients (default watches, login off).
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     subject: Mapped[str] = mapped_column(String(512))
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

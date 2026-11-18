@@ -349,3 +349,18 @@ class AlertOut(ORM):
     body: str
     created_at: datetime
     sent_at: datetime | None
+
+
+class AuthConfigOut(BaseModel):
+    enabled: bool
+    issuer: str
+    client_id: str
+    required_group: str
+    version: str
+
+
+class MeOut(BaseModel):
+    username: str
+    name: str
+    email: str | None
+    login_enabled: bool
