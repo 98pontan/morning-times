@@ -202,15 +202,55 @@ def test_gemini_failures_become_summarizer_errors():
 def test_provider_selection(monkeypatch):
     from src.ai import ClaudeSummarizer, GeminiSummarizer, RuleSummarizer, build_summarizer
     from src.settings import AISettings
-    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+    from src.ai import ChainSummarizer, OpenAICompatibleSummarizer
+    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     assert isinstance(build_summarizer(AISettings(provider="auto")), RuleSummarizer)
     assert isinstance(build_summarizer(AISettings(provider="gemini")), RuleSummarizer)  # no key -> fallback
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     assert isinstance(build_summarizer(AISettings(provider="auto")), GeminiSummarizer)
+    monkeypatch.setenv("MISTRAL_API_KEY", "m")
+    chain = build_summarizer(AISettings(provider="gemini"))
+    assert isinstance(chain, ChainSummarizer) and [s.name for s in chain.summarizers] == ["gemini", "mistral"]
+    assert isinstance(chain.summarizers[1], OpenAICompatibleSummarizer) and chain.summarizers[1].model == "mistral-small-latest"
+    assert build_summarizer(AISettings(provider="mistral", fallbacks=[])).name == "mistral"
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
-    assert isinstance(build_summarizer(AISettings(provider="auto")), ClaudeSummarizer)
-    assert isinstance(build_summarizer(AISettings(provider="gemini")), GeminiSummarizer)
+    assert [s.name for s in build_summarizer(AISettings(provider="auto")).summarizers] == ["claude", "gemini", "mistral"]
+    assert isinstance(build_summarizer(AISettings(provider="gemini", fallbacks=[])), GeminiSummarizer)
+    ollama = build_summarizer(AISettings(provider="ollama", fallbacks=[], ollama_url="http://ollama:11434/v1"))
+    assert ollama.name == "ollama" and ollama.base_url == "http://ollama:11434/v1"
+
+
+def test_openai_compatible_request_and_chain_fallback(monkeypatch):
+    import json
+    import httpx
+    import pytest
+    from src.ai import ChainSummarizer, OpenAICompatibleSummarizer, SummarizerError
+    from src.settings import AISettings
+    monkeypatch.setenv("OPENROUTER_API_KEY", "o")
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(json.loads(request.content))
+        content = '```json\n{"headline": "Kallt", "text": "Dyrt i början av veckan."}\n```'
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 5}})
+
+    router = OpenAICompatibleSummarizer("openrouter", AISettings(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    out = router.energy_outlook({"zone": "SE3"})
+    assert out.headline == "Kallt"
+    body = seen[0]
+    assert body["model"] == "google/gemma-4-31b-it:free" and body["models"][-1] == "openrouter/free" and body["response_format"] == {"type": "json_object"}
+    assert "JSON schema" in body["messages"][0]["content"] and "<data>" in body["messages"][1]["content"]
+
+    down = OpenAICompatibleSummarizer("mistral", AISettings(), client=httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(429, json={"error": "quota"}))))
+    monkeypatch.setenv("MISTRAL_API_KEY", "m")
+    with pytest.raises(SummarizerError):
+        down.energy_outlook({})
+    chain = ChainSummarizer([down, router])
+    assert chain.energy_outlook({}).text.startswith("Dyrt") and chain.name == "openrouter"
+    with pytest.raises(SummarizerError):
+        ChainSummarizer([down]).energy_outlook({})
 
 
 def test_regions_pick_fetch_filter_and_unpick(env):
@@ -599,6 +639,23 @@ def test_energy_outlook_ai_text_and_rules_fallback(env):
     assert result["generator"] == "rules" and "quota" in result["errors"][0]
     assert result["text"].startswith("Idag:") and "Ringhals 4 väntas vara tillbaka i full drift måndag 16/11" in result["text"]
 
+    # The template is kept for a while, then the AI is tried again.
+    services.energy.summarizer = summarizer
+    assert client.get(f"/api/sections/{el}/energy/outlook").json()["generator"] == "rules"
+    services.energy.rules_retry = 0
+    assert client.get(f"/api/sections/{el}/energy/outlook").json()["generator"] != "rules"
+    calls = len(summarizer.payloads)
+
+    # An AI text lasts the whole day; the next day a new one is written.
+    services.energy.rules_retry = 1800
+    client.get(f"/api/sections/{el}/energy/outlook")
+    assert len(summarizer.payloads) == calls
+    from datetime import timedelta
+    today = services.energy.now
+    services.energy.now = lambda: today() + timedelta(days=1)
+    client.get(f"/api/sections/{el}/energy/outlook")
+    assert len(summarizer.payloads) == calls + 1 and len(services.energy._outlook) == 1
+
 
 def test_energy_rate_day():
     from datetime import date as d
@@ -628,3 +685,42 @@ def test_energy_migration_adds_section_to_seeded_database(tmp_path):
     with engine.begin() as conn:
         section = conn.execute(text("SELECT slug, name, position, settings FROM sections WHERE kind = 'energy'")).one()
     assert (section.slug, section.name, section.position) == ("el", "El", 5) and "SE3" in section.settings
+
+
+def test_gemini_retries_transient_errors(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import src.ai.gemini as gemini
+    from src.ai import GeminiSummarizer
+    from src.settings import AISettings
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    attempts = []
+
+    class Interactions:
+        def create(self, **kwargs):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise ConnectionError("[Errno -3] Temporary failure in name resolution")
+            return SimpleNamespace(status="completed", output_text=json.dumps({"headline": "H", "text": "T"}), usage=None)
+
+    out = GeminiSummarizer(AISettings(), client=SimpleNamespace(interactions=Interactions())).energy_outlook({})
+    assert out.headline == "H" and len(attempts) == 3
+
+    client, calls = _fake_gemini(None, fail=RuntimeError("429 quota exhausted"))
+    import pytest
+    from src.ai import SummarizerError
+    with pytest.raises(SummarizerError):
+        GeminiSummarizer(AISettings(), client=client).energy_outlook({})
+    assert len(calls) == 1  # quota errors are not retried
+
+
+def test_energy_rules_headline_names_the_days_that_stand_out():
+    from datetime import date as d, timedelta
+    from src.sections.energy import OutlookDay
+    from src.services.energy import rules_outlook
+    today = d(2026, 11, 18)  # Wednesday
+    levels = ["normal", "high", "normal", "normal", "low", "low", "normal"]
+    days = [OutlookDay(date=today + timedelta(days=i), temperature=1, normal_temperature=3.5, wind=3,
+                       nuclear_available=7012, level=lvl) for i, lvl in enumerate(levels)]
+    headline, _ = rules_outlook("SE3", days, [], None, today)
+    assert headline == "Högre elpriser imorgon, lägre söndag–måndag"

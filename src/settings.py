@@ -49,9 +49,19 @@ class EmailSettings(BaseModel):
 
 class AISettings(BaseModel):
     # auto | claude | gemini | rules. auto picks the first provider whose API key is set (see src/ai).
-    provider: Literal["auto", "claude", "gemini", "rules"] = "auto"
+    provider: Literal["auto", "claude", "gemini", "mistral", "openrouter", "ollama", "rules"] = "auto"
     claude_model: str = "claude-opus-5-5"
     gemini_model: str = "gemini-3.8-flash"
+    # Tried in order when the main provider fails; providers without an API key are skipped.
+    fallbacks: list[str] = Field(default_factory=lambda: ["gemini", "mistral", "openrouter", "ollama"])
+    # Models for the OpenAI-compatible providers (small free models are enough here).
+    models: dict[str, str] = Field(default_factory=lambda: {
+        "mistral": "mistral-small-latest",
+        "openrouter": "google/gemma-4-31b-it:free",
+        "ollama": "qwen3:4b",
+    })
+    # e.g. http://ollama.ollama.svc:11434/v1 for a local Ollama; empty = not used.
+    ollama_url: str = ""
     brief_effort: str = "medium"
     rating_effort: str = "low"
     # Articles about watched stocks/teams/regions rated at or above this (1-10) trigger an alert email.
@@ -78,6 +88,8 @@ class Settings(BaseModel):
         data["email"]["password_available"] = bool(os.environ.get(self.email.password_env))
         data["ai"]["anthropic_api_key_available"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
         data["ai"]["gemini_api_key_available"] = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+        for name, env in (("mistral", "MISTRAL_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")):
+            data["ai"][f"{name}_api_key_available"] = bool(os.environ.get(env))
         return data
 
 

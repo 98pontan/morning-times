@@ -171,10 +171,10 @@ def rules_outlook(zone: str, days: list[OutlookDay], reactors: list[ReactorStatu
         why = f"{', '.join(reasons)} – " if reasons else ""
         sentences.append(f"{span[0].upper()}{span[1:]}: {why}{LEVEL_TEXT[group[0].level]}.")
     end = datetime.combine(days[-1].date + timedelta(days=7), datetime.max.time(), LOCAL_TZ) if days else None
-    for r in reactors:
-        if r.back_at and end and r.back_at <= end:
+    for r in sorted((r for r in reactors if r.back_at), key=lambda r: r.back_at):
+        if end and r.back_at <= end:
             when = r.back_at.astimezone(LOCAL_TZ)
-            sentences.append(f"{r.name} väntas vara tillbaka i full drift {WEEKDAYS[when.weekday()]} {when.day}/{when.month}"
+            sentences.append(f"{r.name} väntas vara tillbaka i full drift {day_name(when.date(), today)} {when.day}/{when.month}"
                              f" (+{r.capacity - round(r.available)} MW).")
     known = [d for d in days if d.price is not None]
     if known and recent:
@@ -187,22 +187,31 @@ def rules_outlook(zone: str, days: list[OutlookDay], reactors: list[ReactorStatu
     if len(set(levels)) == 1:
         headline = f"{word[levels[0]].capitalize()} elpriser väntas hela veckan"
     else:
-        headline = f"{word[levels[0]].capitalize()} elpriser först, sedan {word[levels[-1]]}"
+        # Name the (at most two) stretches that stand out, e.g. "Högre elpriser imorgon, lägre söndag–måndag".
+        compare = {"high": "högre", "low": "lägre"}
+        parts = []
+        for g in [g for g in groups if g[0].level != "normal"][:2]:
+            first, last = day_name(g[0].date, today), day_name(g[-1].date, today)
+            span = first if len(g) == 1 else f"{first}–{last}"
+            parts.append(f"{compare[g[0].level]}{' elpriser' if not parts else ''} {span}")
+        headline = ", ".join(parts)
+        headline = headline[0].upper() + headline[1:]
     return headline, " ".join(sentences)
 
 
 class EnergyService:
     def __init__(self, data: EnergyData | None = None, weather=None, summarizer=None, now=None,
-                 outlook_ttl: float = 3 * 3600):
+                 rules_retry: float = 1800):
         from src.services.weather import WeatherService
 
         self.data = data or OpenEnergyData()
         self.weather = weather or WeatherService()
         self.summarizer = summarizer
         self.now: Callable[[], datetime] = now or (lambda: datetime.now(timezone.utc))
-        self.outlook_ttl = outlook_ttl
+        self.rules_retry = rules_retry
         self._cache = _TTLCache()
         self._outlook: dict[tuple, tuple[float, EnergyOutlook]] = {}
+        self._building: dict[tuple, threading.Lock] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -280,19 +289,28 @@ class EnergyService:
         )
 
     def outlook(self, section: Section) -> EnergyOutlook:
+        """The week's outlook, written once per zone and day (the first visit of the day builds it).
+
+        A template text (AI failed or is off) is retried after `rules_retry` seconds. Concurrent
+        visitors wait for the one build in progress instead of each calling the AI.
+        """
         zone = self.zone_of(section)
-        now = self.now()
-        key = (zone, now.astimezone(LOCAL_TZ).date())
+        key = (zone, self.now().astimezone(LOCAL_TZ).date())
         with self._lock:
-            hit = self._outlook.get(key)
-            # A template text (AI failed or is off) is retried sooner than an AI text.
-            ttl = self.outlook_ttl if hit and hit[1].generator != "rules" else min(self.outlook_ttl, 1800)
-            if hit and time.monotonic() - hit[0] < ttl:
-                return hit[1]
-        outlook = self._build_outlook(zone)
-        with self._lock:
-            self._outlook[key] = (time.monotonic(), outlook)
-        return outlook
+            build_lock = self._building.setdefault(key, threading.Lock())
+        with build_lock:
+            with self._lock:
+                hit = self._outlook.get(key)
+                if hit and (hit[1].generator != "rules" or time.monotonic() - hit[0] < self.rules_retry):
+                    return hit[1]
+            outlook = self._build_outlook(zone)
+            with self._lock:
+                # Keep only today's entries; yesterday's outlook is never shown again.
+                for old in [k for k in self._outlook if k[1] != key[1]]:
+                    self._outlook.pop(old, None)
+                    self._building.pop(old, None)
+                self._outlook[key] = (time.monotonic(), outlook)
+            return outlook
 
     def _build_outlook(self, zone: str) -> EnergyOutlook:
         now = self.now()

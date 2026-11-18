@@ -28,11 +28,19 @@ email:
   password_env: EMAIL_PASSWORD
 
 ai:
-  # auto | claude | gemini | rules
-  # auto = claude if ANTHROPIC_API_KEY is set, else gemini if GEMINI_API_KEY is set, else rules (no AI).
+  # auto | claude | gemini | mistral | openrouter | ollama | rules
+  # auto = claude if ANTHROPIC_API_KEY is set, else the first available provider in fallbacks, else rules (no AI).
   provider: gemini
   claude_model: claude-opus-5-5
   gemini_model: gemini-3.8-flash       # free tier; gemini-3.5-flash-lite is lighter
+  # Tried in order when the main provider fails (outage, "high demand", quota). Providers without
+  # an API key (MISTRAL_API_KEY, OPENROUTER_API_KEY) or ollama_url are skipped.
+  fallbacks: [gemini, mistral, openrouter, ollama]
+  models:
+    mistral: mistral-small-latest      # paid (pay-as-you-go), API keys need billing since Nov 2026
+    openrouter: google/gemma-4-31b-it:free   # free, ~50 requests/day; falls back to openrouter/free
+    ollama: qwen3:4b                   # local, fully private
+  ollama_url: ""                       # e.g. http://ollama.ollama.svc:11434/v1
   brief_effort: medium
   rating_effort: low
   alert_threshold: 7

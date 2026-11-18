@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import asdict
 from datetime import date
 
@@ -22,6 +23,10 @@ from src.settings import AISettings
 log = logging.getLogger(__name__)
 
 # Gemini thinking levels are minimal/low/medium/high; map our effort names onto them.
+# Brief DNS hiccups and "high demand" 503s usually pass within seconds; retry those, not quota or auth errors.
+_TRANSIENT = ("name resolution", "connecterror", "timed out", "timeout", "503", "500", "unavailable", "high demand")
+RETRY_DELAYS = (2.0, 6.0)
+
 _THINKING = {"minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
 
 
@@ -57,19 +62,30 @@ class GeminiSummarizer(Summarizer):
                               f"<data>\n{payload}\n</data>", OutlookText, "low")
 
     def _generate(self, system: str, user: str, output: type[BaseModel], effort: str):
-        try:
-            interaction = self.client.interactions.create(
-                model=self.settings.gemini_model,
-                system_instruction=system,
-                input=user,
-                response_format={"type": "text", "mime_type": "application/json",
-                                 "schema": output.model_json_schema()},
-                generation_config={"thinking_level": _THINKING.get(effort, "medium")},
-                store=False,  # don't keep the conversation on Google's side
-            )
-        except Exception as exc:  # quota (429), network, auth: let callers fall back
-            raise SummarizerError(f"Gemini request failed: {exc}") from exc
+        for attempt, delay in enumerate((*RETRY_DELAYS, None)):
+            try:
+                interaction = self._create(system, user, output, effort)
+                break
+            except Exception as exc:  # quota (429), network, auth: let callers fall back
+                text = f"{type(exc).__name__} {exc}".lower()
+                if delay is None or not any(t in text for t in _TRANSIENT):
+                    raise SummarizerError(f"Gemini request failed: {exc}") from exc
+                log.info("Gemini %s attempt %d failed (%s); retrying in %.0f s", output.__name__, attempt + 1, exc, delay)
+                time.sleep(delay)
+        return self._parse(interaction, output)
 
+    def _create(self, system: str, user: str, output: type[BaseModel], effort: str):
+        return self.client.interactions.create(
+            model=self.settings.gemini_model,
+            system_instruction=system,
+            input=user,
+            response_format={"type": "text", "mime_type": "application/json",
+                             "schema": output.model_json_schema()},
+            generation_config={"thinking_level": _THINKING.get(effort, "medium")},
+            store=False,  # don't keep the conversation on Google's side
+        )
+
+    def _parse(self, interaction, output: type[BaseModel]):
         usage = getattr(interaction, "usage", None)
         log.info("Gemini %s: status=%s in=%s out=%s", output.__name__, interaction.status,
                  getattr(usage, "total_input_tokens", None), getattr(usage, "total_output_tokens", None))
