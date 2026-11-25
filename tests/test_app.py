@@ -83,7 +83,7 @@ def test_config_hides_secrets(env, monkeypatch):
     monkeypatch.setenv("EMAIL_PASSWORD", "hunter2")
     body = client.get("/api/config").text
     assert "hunter2" not in body and '"password_available":true' in body
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/healthz").json() == {"status": "ok", "version": "0.1.0"}
 
 
 class FakeMarket(MarketData):

@@ -39,7 +39,29 @@ If the chosen provider has no key, or a request fails (quota, network), the app 
 | `DATABASE_URL` | e.g. `postgresql+psycopg://user:pass@host:5432/morning_times` (default: local SQLite) |
 | `GEMINI_API_KEY` | Gemini API key (Google AI Studio) when `ai.provider: gemini` |
 | `ANTHROPIC_API_KEY` | Claude API key when `ai.provider: claude` |
+| `OPENROUTER_API_KEY`, `MISTRAL_API_KEY` | optional AI fallbacks, tried in `ai.fallbacks` order |
 | `EMAIL_PASSWORD` | Gmail app password for `email.sender` |
+
+### Login (Keycloak)
+
+`auth.enabled: true` (`APP_AUTH__ENABLED=true`) turns on login:
+
+- Anyone can read. Changing anything (settings, sources, watches, jobs) needs a logged-in user in
+  the group `auth.required_group` (default `newspaper`); others get 401/403.
+- Watches are personal. The watches that existed before login was turned on are the defaults:
+  visitors see them, the morning brief uses them, and each user gets a copy at first login.
+- Alerts go to the email of the user who owns the watch (from Keycloak). Default watches do not
+  alert while login is on.
+
+Keycloak (realm in `auth.issuer`) needs a public client `morning-times` with Standard flow + PKCE
+S256, redirect URI `https://<host>/auth/callback`, post-logout redirect `https://<host>/`, web
+origin `https://<host>`, and a "Group Membership" mapper (claim `groups`, in the access token).
+
+## Versions
+
+Releases follow [semantic versioning](https://semver.org) and are listed in `CHANGELOG.md`. The
+version is in `src/__init__.py` (backend) and `package.json` (UI). Tag a release `v0.1.0` on main:
+CI then also pushes the images as `0.1.0` and `0.1`. Only main updates `latest`.
 
 ## Run locally
 

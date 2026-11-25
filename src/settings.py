@@ -47,6 +47,19 @@ class EmailSettings(BaseModel):
     password_env: str = "EMAIL_PASSWORD"
 
 
+class AuthSettings(BaseModel):
+    """Keycloak (OIDC) login. Off: no login, anyone can change everything (local development).
+
+    On: anyone can read, but changes need a logged-in user in `required_group`, and watches are personal.
+    """
+    enabled: bool = False
+    # Realm URL, i.e. the token's `iss`, e.g. https://keycloak.example.com/realms/homelab
+    issuer: str = ""
+    # Public client used by the UI (Authorization Code + PKCE); tokens must be issued to it (`azp`).
+    client_id: str = "morning-times"
+    required_group: str = "newspaper"
+
+
 class AISettings(BaseModel):
     # auto | claude | gemini | rules. auto picks the first provider whose API key is set (see src/ai).
     provider: Literal["auto", "claude", "gemini", "mistral", "openrouter", "ollama", "rules"] = "auto"
@@ -77,6 +90,7 @@ class Settings(BaseModel):
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     email: EmailSettings = Field(default_factory=EmailSettings)
     ai: AISettings = Field(default_factory=AISettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     seed_file: str = "seed.yaml"
 
     model_config = {"extra": "forbid"}
