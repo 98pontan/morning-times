@@ -44,8 +44,9 @@ jobs:
         uses: https://github.com/docker/metadata-action@v5
         with:
           images: ${{ steps.registry.outputs.host }}/${{ github.repository }}
-          # main -> latest, any branch -> its name, tag v0.1.0 -> 0.1.0 and 0.1.
-          # Only main moves `latest`, so pushing a feature branch never changes what the cluster runs.
+          # Every push gets sha-<7 chars>: that is the tag dev and prod deploy. Also: branch -> its
+          # name, tag v0.1.0 -> 0.1.0 and 0.1, main -> latest (not used by the cluster after the
+          # first promotion).
           tags: |
             type=ref,event=branch
             type=sha,format=short
@@ -60,3 +61,34 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Feature/release branches deploy to the dev namespace: write this commit's image tag
+      # to rke2-gitops, and ArgoCD rolls it out. Prod only changes when the release-to-main Argo
+      # workflow (UI submit or an rc-* tag) promotes a tested sha-* image.
+      # GITOPS_TOKEN: GitHub token with "Contents: read and write" on 98pontan/rke2-gitops.
+      - name: Deploy to dev (rke2-gitops)
+        if: github.ref_type == 'branch' && github.ref_name != 'main'
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          command -v git >/dev/null || { apt-get update && apt-get install -y git; }
+          TAG="sha-$(echo "$SHA" | cut -c1-7)"
+          git clone --depth 1 "https://x-access-token:${GITOPS_TOKEN}@github.com/98pontan/rke2-gitops.git" gitops
+          cd gitops
+          git config user.name "Forgejo CI"
+          git config user.email "forgejo-ci@pontus-homelab.space"
+          printf '# Written by Forgejo CI on every push to a non-main branch. Do not edit by hand.\n# %s @ %s\nimage:\n  tag: "%s"\n' \
+            "$BRANCH" "$SHA" "$TAG" > workload-apps-dev/morning-times/image.yaml
+          git add workload-apps-dev/morning-times/image.yaml
+          git diff --cached --quiet && { echo "dev already runs $TAG"; exit 0; }
+          git commit -m "Deploy morning-times $BRANCH ($TAG) to dev"
+          # The other app's pipeline or the Argo release workflow may have pushed in the meantime
+          for attempt in 1 2 3 4 5; do
+            git push origin HEAD:main && exit 0
+            sleep $((attempt * 3))
+            git pull --rebase origin main
+          done
+          echo "Could not push to rke2-gitops"; exit 1
